@@ -67,14 +67,17 @@ const SENSITIVE_KEY_PATTERNS: readonly RegExp[] = [
   /^(ssn|socialsecuritynumber|taxid)$/,
   /(cardnumber|cardno|pan|cvv|cvc|cvv2|securitycode)$/,
   /^(iban|accountnumber|routingnumber)$/,
+  /webhook(secret|signature|key)?$/i,
+  /^(signingsecret|signingkey|privatekey|cert|certificate)$/i,
 ];
 
 /** String values that look like credentials regardless of their key. */
 const SENSITIVE_VALUE_PATTERNS: readonly RegExp[] = [
   /^\s*(bearer|basic|digest|token)\s+\S+/i,
   /^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/, // JWT
-  /^(sk|pk|rk|whsec|ghp|gho|xox[abp])[_-][A-Za-z0-9_-]{8,}$/i, // common API key prefixes
+  /^(sk|pk|rk|whsec|ghp|gho|xox[abp]|xai)[_-][A-Za-z0-9_-]{8,}$/i, // common API key prefixes including xAI
   /^AKIA[0-9A-Z]{16}$/, // AWS access key id
+  /-----BEGIN\s+([A-Z\s]+)?PRIVATE\s+KEY-----/i, // PEM private keys
 ];
 
 function normalizeKey(key: string): string {
