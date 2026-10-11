@@ -47,11 +47,17 @@ export const envSchema = z.object({
    */
   OPERATOR_TOKEN: z.string().min(16).optional(),
   // Phase 6: AI-assisted proposals.
-  /** `disabled` (default), `anthropic`, or `mock` (tests / demos without a key). */
-  AI_PROVIDER: z.enum(['disabled', 'anthropic', 'mock']).default('disabled'),
-  /** Read by the Anthropic SDK; never logged. Optional because the SDK can also use an `ant auth login` profile. */
+  /** `disabled` (default), `grok`, `anthropic`, `openai`, `gemini`, or `mock` (tests / demos without a key). */
+  AI_PROVIDER: z.enum(['disabled', 'grok', 'anthropic', 'openai', 'gemini', 'mock']).default('disabled'),
+  /** Read by the xAI Grok client; never logged. */
+  GROK_API_KEY: z.string().min(1).optional(),
+  /** Read by the Anthropic SDK; never logged. */
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
-  AI_MODEL: z.string().min(1).default('claude-opus-5-5'),
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  GEMINI_API_KEY: z.string().min(1).optional(),
+  /** Comma-separated list of fallback providers to switch to when limits/quotas are exhausted (e.g. "openai,gemini,mock"). */
+  AI_FALLBACK_PROVIDERS: z.string().optional(),
+  AI_MODEL: z.string().min(1).default('grok-beta'),
   AI_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
   AI_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
   AI_MAX_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(600).default(10),

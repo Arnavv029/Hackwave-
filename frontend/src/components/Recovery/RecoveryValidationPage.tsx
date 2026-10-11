@@ -16,7 +16,9 @@ import {
   Server,
   Layers,
   ChevronRight,
-  Info
+  Info,
+  Sparkles,
+  Shield
 } from 'lucide-react';
 import type { RecoveryProposal, RegisteredApi, ValidationResult } from '../../types';
 
@@ -267,20 +269,34 @@ export const RecoveryValidationPage: React.FC<RecoveryValidationPageProps> = ({
         {/* Right Column: Adapter Code + Live Validation Test Sandbox */}
         <div className="lg:col-span-7 space-y-5">
           {/* Adapter Code Box */}
-          <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-xs">
-            <div className="flex items-center justify-between mb-3">
+          <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-xs space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
                 <FileCode className="w-4 h-4 text-blue-600" />
-                <h3 className="text-sm font-bold text-slate-900">Predefined Controlled Transformation Adapter</h3>
+                <h3 className="text-sm font-bold text-slate-900">Candidate Compatibility Adapter</h3>
               </div>
-              <span className="text-[11px] font-mono text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
-                Safe Runtime (No AI Eval)
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-mono text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200 flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-indigo-500" />
+                  LLM Advisory Proposal
+                </span>
+                <span className="text-[11px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 flex items-center gap-1">
+                  <Shield className="w-3 h-3 text-emerald-600" />
+                  Deterministic Sandbox Sandbox
+                </span>
+              </div>
             </div>
 
-            <p className="text-xs text-slate-600 mb-3 leading-relaxed">
-              {activeProposal.proposedSolution}
-            </p>
+            {/* Advisory Boundary Note */}
+            <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl text-xs space-y-1.5">
+              <div className="flex items-center gap-1.5 text-slate-700 font-semibold text-[11px]">
+                <Info className="w-3.5 h-3.5 text-blue-600" />
+                <span>Advisory Architecture Rule: The LLM proposes; deterministic systems validate; controlled policy governs activation.</span>
+              </div>
+              <p className="text-slate-600 leading-relaxed">
+                {activeProposal.proposedSolution}
+              </p>
+            </div>
 
             <div className="rounded-xl bg-slate-950 p-4 border border-slate-800 text-xs font-mono text-slate-200 overflow-x-auto">
               <pre className="leading-relaxed">
