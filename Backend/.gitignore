@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+# Generated Prisma Client (recreated by `npm run db:generate`)
+src/generated/
+*.log
+.env.example
