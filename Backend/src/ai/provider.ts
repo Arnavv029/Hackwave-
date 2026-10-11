@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { aiProposalOutputSchema, type ChangeReport } from './schemas.js';
@@ -126,6 +127,290 @@ function classifyAnthropicError(err: unknown): ProviderFailure {
   }
   if (err instanceof Error && err.name === 'AbortError') return new ProviderFailure('TIMEOUT', 'provider request aborted', false);
   return new ProviderFailure('UNKNOWN', err instanceof Error ? err.message : String(err), false);
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI (Structured Outputs with JSON schema)
+// ---------------------------------------------------------------------------
+
+export interface OpenAiProviderOptions {
+  model: string;
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+export class OpenAiProposalProvider implements AiProposalProvider {
+  readonly name = 'openai';
+  readonly model: string;
+  private readonly apiKey?: string;
+  private readonly baseUrl: string;
+
+  constructor(options: OpenAiProviderOptions) {
+    this.model = options.model;
+    this.apiKey = options.apiKey;
+    this.baseUrl = options.baseUrl ?? 'https://api.openai.com/v1';
+  }
+
+  async propose(req: ProposalRequest): Promise<ProposalResponse> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), req.timeoutMs);
+    if (req.signal) {
+      req.signal.addEventListener('abort', () => controller.abort());
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_completion_tokens: req.maxOutputTokens,
+          messages: [
+            { role: 'system', content: req.systemPrompt },
+            { role: 'user', content: req.userPrompt },
+          ],
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'ai_proposal_output',
+              strict: true,
+              schema: z.toJSONSchema(aiProposalOutputSchema),
+            },
+          },
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        const status = response.status;
+        if (status === 401 || status === 403) throw new ProviderFailure('AUTH', 'provider rejected the credential', false, status);
+        if (status === 429) throw new ProviderFailure('RATE_LIMITED', 'provider rate limit', true, status);
+        if (status >= 500) throw new ProviderFailure('OVERLOADED', `provider server error ${status}`, true, status);
+        throw new ProviderFailure('BAD_REQUEST', `provider rejected the request: ${text}`, false, status);
+      }
+
+      const data = (await response.json()) as {
+        id?: string;
+        choices?: Array<{ message?: { content?: string; refusal?: string }; finish_reason?: string }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      };
+
+      const choice = data.choices?.[0];
+      if (!choice) throw new ProviderFailure('MALFORMED_OUTPUT', 'no choices in provider response', false);
+      if (choice.message?.refusal) throw new ProviderFailure('REFUSED', `model declined to answer: ${choice.message.refusal}`, false);
+      if (choice.finish_reason === 'length') throw new ProviderFailure('MALFORMED_OUTPUT', 'output truncated at max_tokens', false);
+
+      const content = choice.message?.content;
+      if (!content) throw new ProviderFailure('MALFORMED_OUTPUT', 'empty content in provider response', false);
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        throw new ProviderFailure('MALFORMED_OUTPUT', 'structured output could not be parsed as JSON', false);
+      }
+
+      return {
+        output: parsed,
+        provider: this.name,
+        model: this.model,
+        requestId: data.id ?? null,
+        usage: {
+          inputTokens: data.usage?.prompt_tokens ?? 0,
+          outputTokens: data.usage?.completion_tokens ?? 0,
+        },
+        stopReason: choice.finish_reason ?? null,
+      };
+    } catch (err) {
+      if (err instanceof ProviderFailure) throw err;
+      if (err instanceof Error && err.name === 'AbortError') throw new ProviderFailure('TIMEOUT', 'provider request timed out', true);
+      throw new ProviderFailure('CONNECTION', err instanceof Error ? err.message : String(err), true);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Google Gemini (REST API with Structured Output schema)
+// ---------------------------------------------------------------------------
+
+export interface GeminiProviderOptions {
+  model: string;
+  apiKey?: string;
+}
+
+export class GeminiProposalProvider implements AiProposalProvider {
+  readonly name = 'gemini';
+  readonly model: string;
+  private readonly apiKey?: string;
+
+  constructor(options: GeminiProviderOptions) {
+    this.model = options.model;
+    this.apiKey = options.apiKey;
+  }
+
+  async propose(req: ProposalRequest): Promise<ProposalResponse> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), req.timeoutMs);
+    if (req.signal) {
+      req.signal.addEventListener('abort', () => controller.abort());
+    }
+
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(this.apiKey ?? '')}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: req.systemPrompt }] },
+          contents: [{ role: 'user', parts: [{ text: req.userPrompt }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            responseSchema: z.toJSONSchema(aiProposalOutputSchema),
+            maxOutputTokens: req.maxOutputTokens,
+          },
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        const status = response.status;
+        if (status === 400 && text.includes('API_KEY_INVALID')) throw new ProviderFailure('AUTH', 'provider rejected the credential', false, 401);
+        if (status === 429) throw new ProviderFailure('RATE_LIMITED', 'provider rate limit', true, status);
+        if (status >= 500) throw new ProviderFailure('OVERLOADED', `provider server error ${status}`, true, status);
+        throw new ProviderFailure('BAD_REQUEST', `provider rejected the request: ${text}`, false, status);
+      }
+
+      const data = (await response.json()) as {
+        candidates?: Array<{
+          content?: { parts?: Array<{ text?: string }> };
+          finishReason?: string;
+        }>;
+        usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+      };
+
+      const candidate = data.candidates?.[0];
+      if (!candidate) throw new ProviderFailure('MALFORMED_OUTPUT', 'no candidates in provider response', false);
+      if (candidate.finishReason === 'MAX_TOKENS') throw new ProviderFailure('MALFORMED_OUTPUT', 'output truncated at max_tokens', false);
+      if (candidate.finishReason === 'SAFETY') throw new ProviderFailure('REFUSED', 'model output flagged for safety', false);
+
+      const text = candidate.content?.parts?.[0]?.text;
+      if (!text) throw new ProviderFailure('MALFORMED_OUTPUT', 'empty candidate text in provider response', false);
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new ProviderFailure('MALFORMED_OUTPUT', 'structured output could not be parsed as JSON', false);
+      }
+
+      return {
+        output: parsed,
+        provider: this.name,
+        model: this.model,
+        requestId: null,
+        usage: {
+          inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
+          outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+        },
+        stopReason: candidate.finishReason ?? null,
+      };
+    } catch (err) {
+      if (err instanceof ProviderFailure) throw err;
+      if (err instanceof Error && err.name === 'AbortError') throw new ProviderFailure('TIMEOUT', 'provider request timed out', true);
+      throw new ProviderFailure('CONNECTION', err instanceof Error ? err.message : String(err), true);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// xAI Grok (OpenAI-compatible endpoint at https://api.x.ai/v1)
+// ---------------------------------------------------------------------------
+
+export interface GrokProviderOptions {
+  model?: string;
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+export class GrokProposalProvider extends OpenAiProposalProvider {
+  constructor(options: GrokProviderOptions) {
+    super({
+      model: options.model || 'grok-beta',
+      apiKey: options.apiKey,
+      baseUrl: options.baseUrl ?? 'https://api.x.ai/v1',
+    });
+    // @ts-expect-error override readonly name for clarity in telemetry
+    this.name = 'grok';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resilient Fallback Chain Provider
+// Seamlessly delegates to primary provider, and fails over to secondary/fallback
+// if limits, quotas, rate limits or timeouts are exhausted.
+// ---------------------------------------------------------------------------
+
+export interface FallbackChainOptions {
+  providers: AiProposalProvider[];
+  onFallback?: (failedProvider: string, error: ProviderFailure, nextProvider: string) => void;
+}
+
+export class FallbackChainProposalProvider implements AiProposalProvider {
+  readonly name: string;
+  readonly model: string;
+  private readonly providers: AiProposalProvider[];
+  private readonly onFallback?: (failed: string, err: ProviderFailure, next: string) => void;
+
+  constructor(options: FallbackChainOptions) {
+    if (!options.providers.length) {
+      throw new Error('FallbackChainProposalProvider requires at least one provider');
+    }
+    this.providers = options.providers;
+    this.name = `chain(${this.providers.map((p) => p.name).join('->')})`;
+    this.model = this.providers[0]!.model;
+    this.onFallback = options.onFallback;
+  }
+
+  async propose(req: ProposalRequest): Promise<ProposalResponse> {
+    let lastError: ProviderFailure | null = null;
+
+    for (let i = 0; i < this.providers.length; i++) {
+      const current = this.providers[i]!;
+      try {
+        const res = await current.propose(req);
+        return res;
+      } catch (err) {
+        if (err instanceof ProviderFailure) {
+          lastError = err;
+          // Failover triggers on exhaustion / retryable / server outage / rate limit
+          const isExhaustedOrUnavailable =
+            err.category === 'RATE_LIMITED' ||
+            err.category === 'OVERLOADED' ||
+            err.category === 'TIMEOUT' ||
+            err.category === 'CONNECTION' ||
+            err.category === 'AUTH';
+
+          const next = this.providers[i + 1];
+          if (isExhaustedOrUnavailable && next) {
+            this.onFallback?.(current.name, err, next.name);
+            continue; // Failover to next configured provider in chain
+          }
+        }
+        throw err;
+      }
+    }
+
+    throw lastError ?? new ProviderFailure('UNKNOWN', 'all providers in fallback chain exhausted', false);
+  }
 }
 
 // ---------------------------------------------------------------------------

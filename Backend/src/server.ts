@@ -12,7 +12,32 @@ import { PrismaProposalStore, PrismaRuleStore } from './repair/stores.js';
 import { PrismaAiProposalStore } from './ai/stores.js';
 import { PrismaActivationStore } from './activation/stores.js';
 import { PrismaGuardianStore } from './guardian/store.js';
-import { AnthropicProposalProvider, MockProposalProvider, type AiProposalProvider } from './ai/provider.js';
+import {
+  AnthropicProposalProvider,
+  MockProposalProvider,
+  OpenAiProposalProvider,
+  GeminiProposalProvider,
+  GrokProposalProvider,
+  FallbackChainProposalProvider,
+  type AiProposalProvider,
+} from './ai/provider.js';
+
+function createSingleProvider(name: string, env: ReturnType<typeof getEnv>): AiProposalProvider | null {
+  switch (name) {
+    case 'grok':
+      return new GrokProposalProvider({ model: env.AI_MODEL || 'grok-beta', ...(env.GROK_API_KEY ? { apiKey: env.GROK_API_KEY } : {}) });
+    case 'anthropic':
+      return new AnthropicProposalProvider({ model: env.AI_MODEL, ...(env.ANTHROPIC_API_KEY ? { apiKey: env.ANTHROPIC_API_KEY } : {}) });
+    case 'openai':
+      return new OpenAiProposalProvider({ model: env.AI_MODEL || 'gpt-4o-mini', ...(env.OPENAI_API_KEY ? { apiKey: env.OPENAI_API_KEY } : {}) });
+    case 'gemini':
+      return new GeminiProposalProvider({ model: env.AI_MODEL || 'gemini-1.5-pro', ...(env.GEMINI_API_KEY ? { apiKey: env.GEMINI_API_KEY } : {}) });
+    case 'mock':
+      return new MockProposalProvider();
+    default:
+      return null;
+  }
+}
 
 async function main(): Promise<void> {
   const env = getEnv();
@@ -30,11 +55,31 @@ async function main(): Promise<void> {
   const mockProvidersEnabled = env.MOCK_PROVIDERS_ENABLED ?? env.NODE_ENV !== 'production';
   const mockBaseUrl = env.MOCK_PROVIDERS_BASE_URL ?? `http://127.0.0.1:${env.PORT}/mock`;
 
+  // Build provider chain: Primary (e.g. Grok) + any configured fallback providers
   let aiProvider: AiProposalProvider | null = null;
-  if (env.AI_PROVIDER === 'anthropic') {
-    aiProvider = new AnthropicProposalProvider({ model: env.AI_MODEL, ...(env.ANTHROPIC_API_KEY ? { apiKey: env.ANTHROPIC_API_KEY } : {}) });
-  } else if (env.AI_PROVIDER === 'mock') {
-    aiProvider = new MockProposalProvider();
+  if (env.AI_PROVIDER !== 'disabled') {
+    const primary = createSingleProvider(env.AI_PROVIDER, env);
+    if (primary) {
+      const fallbackNames = (env.AI_FALLBACK_PROVIDERS ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s && s !== env.AI_PROVIDER);
+
+      const fallbacks = fallbackNames
+        .map((name) => createSingleProvider(name, env))
+        .filter((p): p is AiProposalProvider => p !== null);
+
+      if (fallbacks.length > 0) {
+        aiProvider = new FallbackChainProposalProvider({
+          providers: [primary, ...fallbacks],
+          onFallback: (failed, err, next) => {
+            logger.warn({ failedProvider: failed, error: err.message, nextProvider: next }, 'AI provider limits/error encountered; failing over to next provider in chain');
+          },
+        });
+      } else {
+        aiProvider = primary;
+      }
+    }
   }
 
   const { app, scenarioControlsEnabled, scheduler } = buildApp({

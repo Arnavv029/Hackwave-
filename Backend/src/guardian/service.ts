@@ -20,6 +20,7 @@ export interface GuardianServiceDeps {
   secrets: SecretBox | null;
   logger: Logger;
   env: { allowPrivateNetworks: boolean; schedulerEnabled: boolean; nodeEnv: string };
+  aiProvider?: { name: string; model: string; propose: (req: any) => Promise<any> } | null;
   now?: () => Date;
 }
 
@@ -300,6 +301,85 @@ export class GuardianService {
     const baseline = inc.baselineId ? await this.deps.store.getBaseline(inc.baselineId) : null;
     const mappings = await this.deps.store.listMappings(monitor.id);
     let draft = buildProposal(monitor, inc, diffResponses(baseline?.snapshot ?? inc.previousResponse, inc.latestResponse, { renameThreshold: (await this.monitoringSettings()).renameThreshold, volatileFields: (await this.monitoringSettings()).volatileFields }), mappings, input.actor);
+    
+    // Phase 3 & Brief: When an AI provider (e.g. Grok) is configured and there are unresolved changes,
+    // invoke the LLM to interpret unfamiliar drift and generate candidate advisory hypotheses.
+    if (!input.transform && this.deps.aiProvider && draft.requiresManualReview && inc.diffs.length > 0) {
+      try {
+        const structuralChanges = {
+          added: inc.diffs.filter((d) => d.changeType === 'added').map((d) => d.path),
+          removed: inc.diffs.filter((d) => d.changeType === 'removed').map((d) => d.path),
+          typeChanged: inc.diffs.filter((d) => d.changeType === 'type_mismatch').map((d) => ({ path: d.path, from: d.baselineTypes?.[0] ?? 'unknown', to: d.currentTypes?.[0] ?? 'unknown' })),
+          changedPath: inc.diffs[0]?.path ?? null,
+          newValues: [],
+        };
+
+        const aiPrompt = [
+          `Monitor: ${monitor.name} (${monitor.environment})`,
+          `Endpoint: ${monitor.method} ${monitor.url}`,
+          `Detected Changes: ${JSON.stringify(structuralChanges)}`,
+          `Baseline Sample: ${JSON.stringify(baseline?.snapshot ?? inc.previousResponse ?? {}).slice(0, 1000)}`,
+          `Drifted Sample: ${JSON.stringify(inc.latestResponse ?? {}).slice(0, 1000)}`,
+          'Analyze the change. Propose candidate field rename or compatibility mapping, explain impact, and state assumptions.',
+        ].join('\n');
+
+        const aiRes = await this.deps.aiProvider.propose({
+          report: {
+            schemaVersion: 1,
+            provider: monitor.name,
+            endpointKey: `${monitor.method} ${monitor.url}`,
+            method: monitor.method,
+            adapterKey: `monitor:${monitor.id}`,
+            internalContract: { name: monitor.name, fields: {} },
+            baseMapping: [],
+            baseline: baseline ? { id: baseline.id, version: baseline.version, sampleCount: 1, windowTo: baseline.createdAt.toISOString() } : null,
+            finding: { id: inc.id, rule: inc.issueType, severity: inc.severity, summary: inc.title, occurrenceCount: inc.occurrenceCount },
+            structuralChanges,
+            samples: {
+              old: baseline ? { observationId: baseline.id, observedAt: baseline.createdAt.toISOString(), body: baseline.snapshot } : null,
+              new: { observationId: inc.id, observedAt: inc.detectedAt.toISOString(), body: inc.latestResponse },
+              truncated: false,
+            },
+            impact: null,
+            supportedTransformations: ['rename_field', 'field_path_mapping', 'enum_mapping', 'none'],
+            warnings: [],
+          },
+          systemPrompt: 'You are an API resilience advisor. Given an API response drift, interpret semantic equivalence and propose a candidate adapter.',
+          userPrompt: aiPrompt,
+          timeoutMs: 15_000,
+          maxOutputTokens: 2_000,
+        }).catch(() => null);
+
+        if (aiRes && aiRes.output && typeof aiRes.output === 'object') {
+          const out = aiRes.output as Record<string, any>;
+          if (out.summary) {
+            draft = {
+              ...draft,
+              proposedSolution: `[${this.deps.aiProvider.name.toUpperCase()} Advisory]: ${out.summary} — ${draft.proposedSolution}`,
+              assumptions: [...draft.assumptions, ...(Array.isArray(out.assumptions) ? out.assumptions : [])],
+              risks: [...draft.risks, ...(Array.isArray(out.unsafe_reasons) ? out.unsafe_reasons : [])],
+            };
+            if (out.transformation?.rename_field) {
+              const rf = out.transformation.rename_field;
+              const hasOp = draft.transform.ops.some((o) => o.op === 'rename' && o.from === `$.${rf.renamed_to}`);
+              if (!hasOp && rf.renamed_to && rf.from) {
+                draft.transform.ops.push({
+                  op: 'rename',
+                  from: rf.renamed_to.startsWith('$.') ? rf.renamed_to : `$.${rf.renamed_to}`,
+                  to: rf.from.startsWith('$.') ? rf.from : `$.${rf.from}`,
+                  removeSource: false,
+                  onConflict: 'reject',
+                });
+                draft.assumptions.push(`LLM hypothesized semantic correspondence: ${rf.renamed_to} -> ${rf.from}`);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        this.deps.logger.warn({ err }, 'Guardian AI advisory generation skipped');
+      }
+    }
+
     if (input.transform) {
       const spec = adapterSpecSchema.parse(input.transform);
       draft = { ...draft, transform: spec, requiresManualReview: false, proposedSolution: input.proposedSolution ?? `Operator-defined adapter with ${spec.ops.length} operation(s).`, assumptions: [...draft.assumptions, 'Transformation defined manually by an operator.'] };

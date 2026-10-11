@@ -15,7 +15,8 @@ import {
   User,
   Activity,
   FileCode,
-  Tag
+  Tag,
+  Sparkles
 } from 'lucide-react';
 import type { Incident } from '../../types';
 
@@ -484,15 +485,27 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
               </div>
 
               {/* Section 4: Next Steps & Direct Bridge to Recovery */}
-              <div className="p-5 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="p-5 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-700 text-white shadow-md flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div>
-                  <h4 className="text-sm font-bold">{activeIncident.proposalId ? 'Ready to review the proposed adapter fix?' : activeIncident.issueType === 'HTTP error' || activeIncident.issueType === 'Timeout' ? 'Availability incident' : 'No proposal yet'}</h4>
-                  <p className="text-xs text-blue-100 mt-0.5">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-white/20 text-white flex items-center gap-1 border border-white/20">
+                      <Sparkles className="w-3 h-3 text-amber-300" />
+                      LLM Advisory & Repair Layer
+                    </span>
+                  </div>
+                  <h4 className="text-sm font-bold">
                     {activeIncident.proposalId
-                      ? 'A declarative reconciliation adapter was drafted from the diff in the Recovery workspace.'
+                      ? 'Reconciliation adapter & candidate repair ready for validation'
+                      : activeIncident.issueType === 'HTTP error' || activeIncident.issueType === 'Timeout'
+                        ? 'Availability incident'
+                        : 'AI-assisted hypothesis & adapter repair generation'}
+                  </h4>
+                  <p className="text-xs text-blue-100 mt-0.5 max-w-xl">
+                    {activeIncident.proposalId
+                      ? 'A candidate adapter was derived and formatted for isolated sandbox contract verification before live activation.'
                       : activeIncident.issueType === 'HTTP error' || activeIncident.issueType === 'Timeout'
                         ? 'A response adapter cannot repair an unavailable endpoint; the incident resolves automatically once the provider answers again.'
-                        : 'Ask the engine to derive a declarative adapter from the detected changes.'}
+                        : 'Generate an evidence-grounded candidate repair and semantic blast radius interpretation for this API drift.'}
                   </p>
                 </div>
                 {activeIncident.proposalId ? (
@@ -503,16 +516,17 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
                     }}
                     className="px-4 py-2.5 bg-white text-blue-700 hover:bg-blue-50 rounded-xl text-xs font-bold shrink-0 flex items-center gap-2 shadow-sm transition-all active:scale-95"
                   >
-                    <span>Review in Recovery & Validation</span>
+                    <span>Inspect & Validate Candidate</span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
                 ) : activeIncident.issueType !== 'HTTP error' && activeIncident.issueType !== 'Timeout' ? (
                   <button
                     onClick={() => void onRequestProposal(activeIncident.id)}
                     disabled={busy}
-                    className="px-4 py-2.5 bg-white text-blue-700 hover:bg-blue-50 rounded-xl text-xs font-bold shrink-0 flex items-center gap-2 shadow-sm transition-all active:scale-95 disabled:opacity-60"
+                    className="px-4 py-2.5 bg-white text-indigo-900 hover:bg-blue-50 rounded-xl text-xs font-bold shrink-0 flex items-center gap-2 shadow-sm transition-all active:scale-95 disabled:opacity-60"
                   >
-                    <span>Draft adapter proposal</span>
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Generate Repair Proposal</span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
                 ) : null}

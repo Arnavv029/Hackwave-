@@ -343,3 +343,54 @@ describe('human follow-up', () => {
     await post('/api/ai/proposals', { findingId: fid }, 409);
   });
 });
+
+describe('multi-provider implementations (Grok, OpenAI & Gemini) and Fallback Chain', () => {
+  it('instantiates GrokProposalProvider, OpenAiProposalProvider and GeminiProposalProvider correctly', async () => {
+    const { GrokProposalProvider, OpenAiProposalProvider, GeminiProposalProvider } = await import('../../src/ai/provider.js');
+    const grok = new GrokProposalProvider({ model: 'grok-beta', apiKey: 'test-grok-key' });
+    expect(grok.name).toBe('grok');
+    expect(grok.model).toBe('grok-beta');
+
+    const openai = new OpenAiProposalProvider({ model: 'gpt-4o-mini', apiKey: 'test-key' });
+    expect(openai.name).toBe('openai');
+    expect(openai.model).toBe('gpt-4o-mini');
+
+    const gemini = new GeminiProposalProvider({ model: 'gemini-1.5-pro', apiKey: 'test-key' });
+    expect(gemini.name).toBe('gemini');
+    expect(gemini.model).toBe('gemini-1.5-pro');
+  });
+
+  it('fails over to secondary provider in FallbackChainProposalProvider when rate limited / exhausted', async () => {
+    const { FallbackChainProposalProvider, MockProposalProvider, ProviderFailure } = await import('../../src/ai/provider.js');
+    const primaryMock = new MockProposalProvider('primary-grok');
+    const secondaryMock = new MockProposalProvider('secondary-fallback');
+
+    // Simulate primary reaching quota limit
+    primaryMock.respondWith({ kind: 'error', failure: new ProviderFailure('RATE_LIMITED', 'rate limit reached', true, 429) });
+    secondaryMock.respondWith({ kind: 'output', output: goodRename });
+
+    let failoverLogged = false;
+    const chain = new FallbackChainProposalProvider({
+      providers: [primaryMock, secondaryMock],
+      onFallback: (failed, err, next) => {
+        expect(failed).toBe('mock');
+        expect(err.category).toBe('RATE_LIMITED');
+        expect(next).toBe('mock');
+        failoverLogged = true;
+      },
+    });
+
+    const res = await chain.propose({
+      report: {} as never,
+      systemPrompt: 'sys',
+      userPrompt: 'usr',
+      timeoutMs: 1000,
+      maxOutputTokens: 500,
+    });
+
+    expect(res.output).toEqual(goodRename);
+    expect(failoverLogged).toBe(true);
+  });
+});
+
+

@@ -154,10 +154,12 @@ export function compileProposal(output: AiProposalOutput, def: AdapterEndpointDe
 /** Markers that suggest a sample is trying to talk to the model rather than describe a payment. */
 const INJECTION_MARKERS: RegExp[] = [
   /ignore (all|any|the) (previous|prior|above) instructions/i,
-  /\b(system prompt|developer message|assistant:|human:)\b/i,
+  /\b(system prompt|developer message|assistant:|human:|user:|operator:)\b/i,
   /you are (now|a|an) /i,
-  /\b(approve|activate|apply) (this|the) (repair|mapping|change)\b/i,
-  /<\/?(instruction|system|prompt)s?>/i,
+  /\b(approve|activate|apply|bypass|override) (this|the) (repair|mapping|change|policy|rules)\b/i,
+  /<\/?(instruction|system|prompt|untrusted_data)s?>/i,
+  /```(system|json:override|assistant)/i,
+  /\b(disregard|forget) (all|any|previous)\b/i,
 ];
 
 export function detectInjection(value: unknown): string[] {

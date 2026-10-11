@@ -236,7 +236,15 @@ export function buildApp(deps: AppDeps): BuiltApp {
     settings: () => guardianService.monitoringSettings(),
     maxResponseBytes: deps.providerClient.maxResponseBytes,
   });
-  const guardianService: GuardianService = new GuardianService({ store: deps.guardian.store, engine: guardianEngine, events: guardianEvents, secrets, logger: deps.logger, env: { allowPrivateNetworks: deps.guardian.allowPrivateNetworks, schedulerEnabled: deps.guardian.schedulerEnabled, nodeEnv: deps.nodeEnv } });
+  const guardianService: GuardianService = new GuardianService({
+    store: deps.guardian.store,
+    engine: guardianEngine,
+    events: guardianEvents,
+    secrets,
+    logger: deps.logger,
+    env: { allowPrivateNetworks: deps.guardian.allowPrivateNetworks, schedulerEnabled: deps.guardian.schedulerEnabled, nodeEnv: deps.nodeEnv },
+    aiProvider: deps.ai.provider,
+  });
   const scheduler = new MonitorScheduler({ store: deps.guardian.store, runCheck: (id, by) => guardianEngine.runCheck(id, by), logger: deps.logger, ...(deps.guardian.schedulerTickMs ? { tickMs: deps.guardian.schedulerTickMs } : {}), ...(deps.guardian.maxConcurrentChecks ? { maxConcurrent: deps.guardian.maxConcurrentChecks } : {}) });
   app.use('/api', createGuardianRouter({ service: guardianService, events: guardianEvents, requireOperator, operatorAuthEnabled: Boolean(deps.operatorToken), operatorToken: deps.operatorToken }));
 

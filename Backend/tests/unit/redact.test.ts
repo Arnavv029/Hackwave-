@@ -39,6 +39,17 @@ describe('redactValue', () => {
     expect(out['name']).toBe('fine');
   });
 
+  it('redacts xAI keys, webhook secrets, and private keys', () => {
+    const out = redactValue({
+      xai_key: 'xai-9876543210fedcba',
+      webhook_secret: 'whsec_abcdef123456',
+      signing_key: 'secret-signing-key',
+    }) as Record<string, unknown>;
+    expect(out['xai_key']).toBe(REDACTED);
+    expect(out['webhook_secret']).toBe(REDACTED);
+    expect(out['signing_key']).toBe(REDACTED);
+  });
+
   it('bounds recursion depth', () => {
     let deep: Record<string, unknown> = { v: 1 };
     for (let i = 0; i < 30; i += 1) deep = { child: deep };
