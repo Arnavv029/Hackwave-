@@ -1,26 +1,7 @@
 import React, { useState } from 'react';
-import { 
-  Plus, 
-  Search, 
-  Filter, 
-  Calendar, 
-  ArrowUpRight, 
-  AlertTriangle, 
-  CheckCircle2, 
-  Clock, 
-  Activity, 
-  RefreshCw, 
-  ExternalLink, 
-  ShieldCheck, 
-  FileCode, 
-  Pause, 
-  Play, 
-  MoreHorizontal,
-  ChevronRight,
-  Sparkles,
-  ArrowRight
-} from 'lucide-react';
-import { RegisteredApi, MetricCardData, EnvironmentType, Incident } from '../../types';
+import { Plus, Search, AlertTriangle, CheckCircle2, RefreshCw, ShieldCheck, Pause, Play, ChevronRight, ArrowRight } from 'lucide-react';
+import type { RegisteredApi, MetricCardData, Incident, AuditLogItem } from '../../types';
+import { Trash2, ShieldCheck as ShieldIcon } from 'lucide-react';
 import { MetricCards } from '../MetricCards';
 import { ChartsSection } from '../ChartsSection';
 
@@ -28,29 +9,44 @@ interface DashboardViewProps {
   apis: RegisteredApi[];
   metricCards: MetricCardData[];
   incidents: Incident[];
+  activity: AuditLogItem[];
   onOpenAddApi: () => void;
   onNavigateSection: (section: 'Incidents' | 'Recovery' | 'Reports' | 'Audit Log') => void;
-  onProbeApi: (apiId: string) => void;
-  onTogglePauseApi: (apiId: string) => void;
-  showToast: (msg: string) => void;
-  trafficData: any[];
-  responseTimeData: any[];
+  onProbeApi: (apiId: string) => Promise<void>;
+  onTogglePauseApi: (apiId: string) => Promise<void>;
+  onDeleteApi: (apiId: string) => Promise<void>;
+  onEditUrl: (apiId: string, url: string) => Promise<void>;
+  onApproveBaseline: (apiId: string, baselineId: string) => Promise<void>;
+  onOpenIncident: (incidentId: string) => void;
+  showToast: (msg: string, kind?: 'ok' | 'error') => void;
+  trafficData: { date: string; label: string; volume: number }[];
+  responseTimeData: { time: string; avgLatency: number; peakLatency: number }[];
+  lastUpdated: number | null;
+  live: boolean;
+  onRefresh: () => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   apis,
   metricCards,
   incidents,
+  activity,
   onOpenAddApi,
   onNavigateSection,
   onProbeApi,
   onTogglePauseApi,
+  onDeleteApi,
+  onEditUrl,
+  onApproveBaseline,
+  onOpenIncident,
   showToast,
   trafficData,
   responseTimeData,
+  lastUpdated,
+  live,
+  onRefresh,
 }) => {
   const [selectedEnv, setSelectedEnv] = useState<string>('All');
-  const [selectedDateRange, setSelectedDateRange] = useState<string>('7d');
   const [searchQuery, setSearchQuery] = useState('');
   const [probingId, setProbingId] = useState<string | null>(null);
 
@@ -63,16 +59,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return matchesEnv && matchesSearch;
   });
 
-  const handleManualProbe = (api: RegisteredApi) => {
+  const handleManualProbe = async (api: RegisteredApi) => {
     setProbingId(api.id);
-    setTimeout(() => {
+    try {
+      await onProbeApi(api.id);
+    } finally {
       setProbingId(null);
-      onProbeApi(api.id);
-      showToast(`Probed ${api.name}: Received HTTP 200 in ${api.responseTime}`);
-    }, 700);
+    }
   };
 
-  const openIncidentsCount = incidents.filter(i => i.status !== 'Resolved').length;
+  const openIncidents = incidents.filter(i => i.status !== 'Resolved');
+  const openIncidentsCount = openIncidents.length;
+  const topIncident = openIncidents[0];
+  const topChange = topIncident?.diffs?.find((d) => d.changeType !== 'added');
+  const badgeFor = (action: string) =>
+    /Incident/.test(action) ? ['Incident', 'bg-rose-50 text-rose-700 border-rose-200']
+    : /Baseline/.test(action) ? ['Baseline', 'bg-purple-50 text-purple-700 border-purple-200']
+    : /Validation/.test(action) ? ['Validation', 'bg-emerald-50 text-emerald-700 border-emerald-200']
+    : /proposal|Adapter/i.test(action) ? ['Proposal', 'bg-blue-50 text-blue-700 border-blue-200']
+    : /SSRF/.test(action) ? ['Security', 'bg-amber-50 text-amber-700 border-amber-200']
+    : ['Activity', 'bg-slate-50 text-slate-700 border-slate-200'];
 
   return (
     <div className="space-y-6">
@@ -103,16 +109,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             ))}
           </div>
 
-          {/* Date Range Dropdown */}
-          <select
-            value={selectedDateRange}
-            onChange={(e) => setSelectedDateRange(e.target.value)}
-            className="px-3 py-2 bg-white border border-slate-200/90 rounded-xl text-xs font-medium text-slate-700 shadow-xs focus:outline-none focus:border-blue-500"
+          {/* Live status */}
+          <button
+            onClick={onRefresh}
+            title="Refresh now"
+            className="px-3 py-2 bg-white border border-slate-200/90 rounded-xl text-xs font-medium text-slate-700 shadow-xs flex items-center gap-2"
           >
-            <option value="24h">Last 24 Hours</option>
-            <option value="7d">Last 7 Days</option>
-            <option value="30d">Last 30 Days</option>
-          </select>
+            <span className={`w-2 h-2 rounded-full ${live ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+            <span>{live ? 'Live' : 'Polling'}{lastUpdated ? ` · updated ${new Date(lastUpdated).toLocaleTimeString()}` : ''}</span>
+            <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+          </button>
 
           {/* Add API Action Button */}
           <button
@@ -134,20 +140,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h4 className="text-xs sm:text-sm font-bold text-slate-900">Needs Attention: Schema Drift Detected</h4>
+                <h4 className="text-xs sm:text-sm font-bold text-slate-900">Needs Attention: {topIncident?.issueType ?? 'Change'} Detected</h4>
                 <span className="px-2 py-0.5 rounded-full bg-amber-200/60 text-amber-900 text-[11px] font-bold">
                   {openIncidentsCount} Open Incidents
                 </span>
               </div>
               <p className="text-xs text-slate-600 mt-0.5">
-                User Profile API changed <code className="font-mono text-amber-900 bg-amber-100 px-1 py-0.5 rounded">name → display_name</code>. Potentially affects User Profile Card.
+                {topIncident?.apiName}: {topChange ? <><code className="font-mono text-amber-900 bg-amber-100 px-1 py-0.5 rounded">{topChange.fieldName}</code> {topChange.changeType.replace('_', ' ')}.</> : topIncident?.title}
+                {topIncident?.affectedFeatures?.length ? ` Potentially affects ${topIncident.affectedFeatures.map((f) => f.featureName).join(', ')}.` : ' No feature mappings registered yet.'}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
             <button
-              onClick={() => onNavigateSection('Incidents')}
+              onClick={() => (topIncident ? onOpenIncident(topIncident.id) : onNavigateSection('Incidents'))}
               className="px-3.5 py-1.5 bg-white border border-amber-300 hover:bg-amber-100/50 text-amber-900 rounded-xl text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5"
             >
               <span>Investigate Impact</span>
@@ -225,6 +232,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
+              {filteredApis.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="py-10 text-center text-slate-400">
+                    No APIs registered yet. Click <span className="font-semibold text-slate-600">Add API</span> and paste any JSON endpoint URL, or pick one of the built-in <span className="font-semibold text-slate-600">showcase APIs that go wrong</span> (also in Settings → Register all). The first successful response becomes the baseline.
+                  </td>
+                </tr>
+              )}
               {filteredApis.map((api) => {
                 const isProbing = probingId === api.id;
                 const isFailing = api.status === 'Failing';
@@ -286,19 +300,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
                     {/* Incident / Change */}
                     <td className="py-3.5 px-4">
-                      {api.hasIncident ? (
+                      {api.hasIncident && api.incidentId ? (
                         <button
-                          onClick={() => onNavigateSection('Incidents')}
+                          onClick={() => onOpenIncident(api.incidentId!)}
                           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 text-[11px] font-semibold transition-colors"
                         >
                           <AlertTriangle className="w-3 h-3 text-amber-600" />
-                          <span>{api.incidentId}</span>
+                          <span>{api.openIncidentCount ?? 1} open incident{(api.openIncidentCount ?? 1) === 1 ? '' : 's'}</span>
+                        </button>
+                      ) : api.pendingBaselineId ? (
+                        <button
+                          onClick={() => void onApproveBaseline(api.id, api.pendingBaselineId!)}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 text-[11px] font-semibold transition-colors"
+                          title="Approve the captured first response as the baseline"
+                        >
+                          <ShieldIcon className="w-3 h-3" />
+                          Approve baseline
                         </button>
                       ) : api.baselineApproved ? (
                         <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600 font-medium">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                          Baseline Locked
+                          Baseline Locked{api.activeProposalId ? ' · adapter active' : ''}
                         </span>
+                      ) : api.statusOnly ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-slate-500 font-medium" title="The endpoint answers successfully but not with JSON, so only status and latency are monitored">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-slate-400" />
+                          Status-only (non-JSON)
+                        </span>
+                      ) : api.lastError ? (
+                        <span className="text-[11px] text-rose-500 truncate max-w-[200px] inline-block" title={api.lastError}>{api.lastError}</span>
                       ) : (
                         <span className="text-[11px] text-slate-400">No baseline</span>
                       )}
@@ -308,7 +338,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <td className="py-3.5 px-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
                         <button
-                          onClick={() => handleManualProbe(api)}
+                          onClick={() => void handleManualProbe(api)}
                           disabled={isProbing}
                           title="Run safe check now"
                           className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50"
@@ -317,16 +347,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </button>
 
                         <button
-                          onClick={() => onTogglePauseApi(api.id)}
+                          onClick={() => void onTogglePauseApi(api.id)}
                           title={isPaused ? "Resume checking" : "Pause monitoring"}
                           className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
                         >
                           {isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
                         </button>
 
-                        {api.hasIncident && (
+                        <button
+                          onClick={() => { const next = window.prompt(`Endpoint URL for ${api.name}`, api.url); if (next && next.trim() && next.trim() !== api.url) void onEditUrl(api.id, next.trim()); }}
+                          title="Edit endpoint URL"
+                          className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors text-[11px] font-bold"
+                        >
+                          URL
+                        </button>
+
+                        <button
+                          onClick={() => { if (window.confirm(`Remove monitor "${api.name}" and its history?`)) void onDeleteApi(api.id); }}
+                          title="Remove monitor"
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+
+                        {api.hasIncident && api.incidentId && (
                           <button
-                            onClick={() => onNavigateSection('Incidents')}
+                            onClick={() => onOpenIncident(api.incidentId!)}
                             className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-[11px] font-semibold transition-colors"
                           >
                             Details
@@ -361,52 +407,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
 
           <div className="space-y-3">
-            {[
-              {
-                time: '12:15 UTC',
-                title: 'Staging Contract Test Passed (VAL-RUN-804)',
-                desc: 'User Profile API adapter verified: $.name = "Aman Gupta"',
-                badge: 'Validation',
-                badgeColor: 'bg-emerald-50 text-emerald-700 border-emerald-200'
-              },
-              {
-                time: '11:48 UTC',
-                title: 'Recovery Proposal Created (PROP-001)',
-                desc: 'Backwards-compatible adapter proposed for name -> display_name',
-                badge: 'Proposal',
-                badgeColor: 'bg-blue-50 text-blue-700 border-blue-200'
-              },
-              {
-                time: '11:42 UTC',
-                title: 'Drift Detected on User Profile API',
-                desc: 'Field `name` removed in latest HTTP 200 response payload',
-                badge: 'Incident',
-                badgeColor: 'bg-rose-50 text-rose-700 border-rose-200'
-              },
-              {
-                time: '10:30 UTC',
-                title: 'Baseline Approved for Orders API',
-                desc: 'Payload committed by Alex Rivera as golden schema reference',
-                badge: 'Baseline',
-                badgeColor: 'bg-purple-50 text-purple-700 border-purple-200'
-              }
-            ].map((activity, idx) => (
-              <div key={idx} className="p-3 rounded-xl bg-slate-50/70 border border-slate-100 flex items-start justify-between gap-3">
+            {activity.length === 0 && <p className="text-xs text-slate-400 py-6 text-center">No activity yet. Register an API to start the audit trail.</p>}
+            {activity.filter((a) => a.action !== 'Manual check executed').slice(0, 6).map((item) => {
+              const [badge, badgeColor] = badgeFor(item.action);
+              return (
+              <div key={item.id} className="p-3 rounded-xl bg-slate-50/70 border border-slate-100 flex items-start justify-between gap-3">
                 <div className="flex items-start gap-3">
-                  <span className="w-2 h-2 rounded-full bg-blue-500 mt-1.5 shrink-0" />
+                  <span className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${item.result === 'Failure' ? 'bg-rose-500' : 'bg-blue-500'}`} />
                   <div>
-                    <h5 className="text-xs font-semibold text-slate-900">{activity.title}</h5>
-                    <p className="text-[11px] text-slate-500 mt-0.5">{activity.desc}</p>
+                    <h5 className="text-xs font-semibold text-slate-900">{item.action} · {item.target}</h5>
+                    <p className="text-[11px] text-slate-500 mt-0.5">{item.details}</p>
                   </div>
                 </div>
                 <div className="text-right shrink-0">
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${activity.badgeColor}`}>
-                    {activity.badge}
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${badgeColor}`}>
+                    {badge}
                   </span>
-                  <div className="text-[10px] text-slate-400 mt-1 font-mono">{activity.time}</div>
+                  <div className="text-[10px] text-slate-400 mt-1 font-mono">{item.timestamp}</div>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 

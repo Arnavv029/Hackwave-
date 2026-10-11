@@ -1,0 +1,1167 @@
+// DriftGuard Phase 1 data model.
+//
+// Conventions
+// - IDs are UUID v7 (time-ordered, index friendly).
+// - Every table has createdAt / updatedAt.
+// - Flexible, evidence-like payloads are stored as JSONB and validated with Zod
+//   at the application boundary before they are written.
+// - Secrets are never stored: nodes carry a `secretRef` (a name the runtime
+//   resolves from its own environment), never the secret value.
+
+generator client {
+  provider = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// What a node in the dependency graph represents.
+enum NodeKind {
+  /// An external provider (e.g. Users service) identified by a base URL.
+  PROVIDER
+  /// A single operation on a provider, e.g. `GET /users`.
+  OPERATION
+  /// Legacy (Phase 1): an internal client. Prefer ADAPTER.
+  CLIENT
+  /// An internal adapter that calls operations and normalises their payloads.
+  ADAPTER
+  /// An application service that uses adapters / other services.
+  SERVICE
+  /// An application workflow (e.g. Checkout).
+  WORKFLOW
+  /// A regression test that covers a workflow, service or adapter.
+  TEST
+}
+
+/// Business importance of a node; mainly used for workflows.
+enum Criticality {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+/// Meaning of a directed edge `source -> target`.
+///
+/// DIRECTION CONVENTION: every edge points in the direction of impact flow,
+/// from the node depended upon (upstream) to the node that depends on it
+/// (downstream). "A change in `source` can affect `target`." Impact analysis
+/// follows OUTGOING edges. Read the labels as describing the link, e.g.
+/// `operation -CALLS-> adapter` means "the adapter calls the operation".
+enum EdgeRelation {
+  /// PROVIDER -> OPERATION: the provider exposes the operation.
+  EXPOSES
+  /// OPERATION -> ADAPTER|SERVICE|CLIENT: the downstream node calls the operation.
+  CALLS
+  /// OPERATION -> ADAPTER: the adapter normalises this operation's payload (field-level).
+  NORMALIZES
+  /// ADAPTER|SERVICE -> SERVICE|WORKFLOW: the downstream node uses the upstream one.
+  USES
+  /// SERVICE|WORKFLOW -> SERVICE|WORKFLOW: output of the upstream feeds the downstream.
+  FEEDS_INTO
+  /// Legacy (Phase 1): CLIENT|ADAPTER -> WORKFLOW.
+  CONSUMES
+  /// ADAPTER|SERVICE|WORKFLOW -> TEST: the upstream node is covered by the test.
+  COVERED_BY
+}
+
+/// How we know an edge exists.
+enum EdgeProvenance {
+  /// Derived from observed traffic (e.g. probes create PROVIDER -EXPOSES-> OPERATION).
+  OBSERVED
+  /// Registered by a person or deployment manifest through the API.
+  MANUAL
+  /// Inferred by tooling (code scan, log mining); needs confirmation.
+  INFERRED
+}
+
+/// How an observation was captured.
+enum ObservationSource {
+  PROBE
+  PROXY
+  MANUAL
+  SEED
+}
+
+/// Coarse outcome of an observed call.
+enum ObservationOutcome {
+  SUCCESS
+  HTTP_ERROR
+  RATE_LIMITED
+  TIMEOUT
+  NETWORK_ERROR
+  UNAVAILABLE
+  /// A response arrived but its body could not be used (malformed JSON, too large).
+  MALFORMED_RESPONSE
+}
+
+/// Fine-grained reason an observed call did not produce a usable success.
+/// Null on an observation means no error was detected at the transport or
+/// parsing level (business-rule violations are recorded separately as
+/// evidence, never as errors).
+enum ErrorCategory {
+  HTTP_ERROR
+  RATE_LIMITED
+  UNAVAILABLE
+  TIMEOUT
+  CONNECTION_ERROR
+  MALFORMED_JSON
+  RESPONSE_TOO_LARGE
+  UNKNOWN
+}
+
+/// What happened when the response body was read and parsed.
+enum ParseOutcome {
+  /// Body was valid JSON.
+  JSON
+  /// Body was empty.
+  EMPTY
+  /// Body present but not JSON (per content-type or content).
+  NON_JSON
+  /// Declared JSON but failed to parse.
+  MALFORMED_JSON
+  /// Body exceeded the size bound and reading stopped.
+  TRUNCATED
+  /// No body could be read (timeout, connection failure).
+  NOT_READ
+}
+
+/// Baseline lifecycle: DRAFT -> PENDING_REVIEW -> APPROVED -> ACTIVE -> SUPERSEDED,
+/// with REJECTED reachable from DRAFT / PENDING_REVIEW. Only ACTIVE baselines
+/// are compared against. Summaries are immutable after creation.
+enum BaselineStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  ACTIVE
+  SUPERSEDED
+}
+
+/// Whether a finding rests on a single-observation structural fact or on a
+/// statistically evaluated window of observations.
+enum DetectionKind {
+  STRUCTURAL
+  STATISTICAL
+}
+
+enum FindingCategory {
+  STRUCTURAL
+  BEHAVIORAL
+  RATE_LIMIT
+  AVAILABILITY
+  PAGINATION
+  SEMANTIC
+  OPERATIONAL
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FindingStatus {
+  OPEN
+  ACKNOWLEDGED
+  REPAIR_PROPOSED
+  RESOLVED
+  DISMISSED
+  /// Reviewed and judged not to be a real change; recurrences stay suppressed.
+  FALSE_POSITIVE
+}
+
+enum RepairKind {
+  FIELD_MAPPING
+  ENUM_MAPPING
+  RETRY_POLICY
+  PAGINATION_ADAPTER
+  CIRCUIT_BREAKER
+  MANUAL_REVIEW
+}
+
+/// Lifecycle of a registered repair rule version (Phase 5). Rule specs are
+/// immutable per version; only status changes.
+enum RepairRuleStatus {
+  DRAFT
+  APPROVED
+  RETIRED
+}
+
+/// Where the payload of a repair execution came from.
+enum ExecutionSource {
+  /// Sanitised sample of a stored observation.
+  OBSERVATION
+  /// Payload supplied explicitly through the API.
+  MANUAL
+  /// Fixture payload bundled with the rule.
+  FIXTURE
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum ProposalStatus {
+  DRAFT
+  PENDING_REVIEW
+  VALIDATING
+  VALIDATED
+  BLOCKED
+  ACTIVE
+  ROLLED_BACK
+  REJECTED
+}
+
+enum RepairVersionStatus {
+  CANDIDATE
+  VALIDATED
+  ACTIVE
+  FAILED
+  SUPERSEDED
+  ROLLED_BACK
+}
+
+enum TestRunStatus {
+  QUEUED
+  RUNNING
+  PASSED
+  FAILED
+  ERROR
+}
+
+enum ActorType {
+  SYSTEM
+  USER
+  SERVICE
+}
+
+enum AuditEntityType {
+  DEPENDENCY_NODE
+  DEPENDENCY_EDGE
+  OBSERVATION
+  BASELINE
+  FINDING
+  REPAIR_PROPOSAL
+  REPAIR_VERSION
+  TEST_RUN
+  IMPACT_REPORT
+  REPAIR_RULE
+  REPAIR_EXECUTION
+  AI_PROPOSAL
+  VALIDATION_RUN
+  ACTIVATION
+  VERIFICATION_RUN
+  MONITOR
+  MONITOR_BASELINE
+  MONITOR_INCIDENT
+  RECOVERY_PROPOSAL
+  FEATURE_MAPPING
+  SETTINGS
+}
+
+enum ValidationRunStatus {
+  PASSED
+  FAILED
+  ERROR
+}
+
+enum ApprovalDecision {
+  APPROVE
+  REJECT
+}
+
+enum ActivationKind {
+  ACTIVATE
+  ROLLBACK
+  AUTO_ROLLBACK
+  DEACTIVATE
+}
+
+enum Initiator {
+  HUMAN
+  SYSTEM
+}
+
+/// Outcome of an AI-assisted proposal after backend policy and validation
+/// checks (Phase 6). The model never sets this; the backend does.
+enum AiProposalStatus {
+  /// Passed policy and backend validation; waiting for a human.
+  PENDING_REVIEW
+  /// Model declined to propose a transform or flagged it as ambiguous.
+  NEEDS_INFORMATION
+  /// Output violated policy (unsupported transform, code, unknown fields...).
+  REJECTED_BY_POLICY
+  /// Compiled transform did not normalise the supplied samples.
+  FAILED_VALIDATION
+  /// Provider error, timeout, refusal or unparsable output.
+  PROVIDER_ERROR
+  /// A human promoted it into a DRAFT deterministic rule.
+  PROMOTED
+  DISMISSED
+}
+
+// ---------------------------------------------------------------------------
+// Dependency graph
+// ---------------------------------------------------------------------------
+
+/// A vertex in the dependency graph: provider, operation, client or workflow.
+model DependencyNode {
+  id   String   @id @default(uuid(7)) @db.Uuid
+  kind NodeKind
+  /// Stable, human-readable identifier, e.g. `users`, `users:GET:/users`,
+  /// `client:UserClient`, `workflow:checkout`.
+  key  String   @unique
+  name String
+
+  /// Optional parent (an OPERATION belongs to a PROVIDER).
+  parentId String?          @db.Uuid
+  parent   DependencyNode?  @relation("NodeParent", fields: [parentId], references: [id], onDelete: Cascade)
+  children DependencyNode[] @relation("NodeParent")
+
+  enabled     Boolean     @default(true)
+  criticality Criticality @default(MEDIUM)
+
+  // PROVIDER fields
+  baseUrl   String?
+  /// Name of the secret in the runtime environment. Never the secret itself.
+  secretRef String?
+
+  // OPERATION fields
+  method String?
+  path   String?
+
+  /// Free-form, validated-at-boundary attributes (owner, tags, fixture ids...).
+  metadata Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  outgoingEdges DependencyEdge[] @relation("EdgeSource")
+  incomingEdges DependencyEdge[] @relation("EdgeTarget")
+  observations  Observation[]
+  baselines     Baseline[]
+  findings      Finding[]
+  testRuns      TestRun[]        @relation("TestRunWorkflow")
+
+  @@index([kind])
+  @@index([parentId])
+  @@index([kind, enabled])
+  @@map("dependency_nodes")
+}
+
+/// A directed edge `source -> target` with a relation type.
+model DependencyEdge {
+  id       String       @id @default(uuid(7)) @db.Uuid
+  sourceId String       @db.Uuid
+  targetId String       @db.Uuid
+  relation EdgeRelation
+  /// Short explanation shown in impact analysis ("expects internal `name`").
+  note     String?
+
+  // Phase 4: evidence about the edge itself.
+  provenance EdgeProvenance @default(MANUAL)
+  /// 0..1 confidence that the edge is real (1 for observed, lower for inferred).
+  confidence Float           @default(1)
+  /// Field paths of the upstream payload the downstream actually consumes
+  /// (e.g. ["transaction_id", "amount"]). Empty = unknown, not "none".
+  consumedFields Json        @default("[]")
+  metadata       Json        @default("{}")
+
+  source DependencyNode @relation("EdgeSource", fields: [sourceId], references: [id], onDelete: Cascade)
+  target DependencyNode @relation("EdgeTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sourceId, targetId, relation])
+  @@index([targetId])
+  @@index([provenance])
+  @@map("dependency_edges")
+}
+
+/// A persisted snapshot of an impact analysis for a finding (Phase 4). The
+/// live report can always be recomputed; snapshots exist so later phases can
+/// reference exactly what was known when a decision was made.
+model ImpactReport {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  findingId String?  @db.Uuid
+  finding   Finding? @relation(fields: [findingId], references: [id], onDelete: SetNull)
+  /// The changed dependency the traversal started from.
+  nodeId    String   @db.Uuid
+
+  report         Json
+  dependentCount Int
+  testCount      Int
+  /// Highest likelihood among dependents: LOW | MEDIUM | HIGH | NONE.
+  maxLikelihood  String
+  truncated      Boolean @default(false)
+  createdBy      String  @default("system")
+  createdAt      DateTime @default(now())
+
+  @@index([findingId, createdAt(sort: Desc)])
+  @@index([nodeId, createdAt(sort: Desc)])
+  @@map("impact_reports")
+}
+
+// ---------------------------------------------------------------------------
+// Observations and baselines
+// ---------------------------------------------------------------------------
+
+/// One sanitized record of a call to an OPERATION node.
+model Observation {
+  id     String            @id @default(uuid(7)) @db.Uuid
+  nodeId String            @db.Uuid
+  node   DependencyNode    @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  source ObservationSource @default(PROBE)
+
+  observedAt DateTime           @default(now())
+  outcome    ObservationOutcome
+  /// Fine-grained error reason; null when the call succeeded at transport level.
+  errorCategory ErrorCategory?
+  /// HTTP status; null when no HTTP response was received (timeout, connection failure).
+  statusCode Int?
+  latencyMs  Int
+
+  // Denormalized identity of the observed call (Phase 2) for cheap filtering.
+  /// Provider key, e.g. `payments`.
+  providerKey String?
+  /// Endpoint key, e.g. `POST /charges` (path template, not the concrete URL).
+  endpointKey String?
+  method      String?
+
+  /// Outcome of reading/parsing the response body.
+  parseOutcome ParseOutcome?
+  /// Bytes read from the response body (bounded by the client).
+  responseBytes Int?
+  /// Test / probe correlation id supplied by the caller (never generated).
+  correlationId String?
+  /// Mock scenario the provider reported as active (demo evidence only).
+  scenario String?
+
+  /// Sanitized request metadata: path, query keys, header names, body shape.
+  requestMeta Json?
+  /// Flattened response field paths with observed JSON types.
+  fieldPaths Json?
+  /// Structural difference versus the previous comparable observation
+  /// (evidence only; not a classification).
+  shapeDelta Json?
+  /// Result of validating the body against the declared endpoint contract.
+  /// Observed values are preserved even when this reports violations.
+  contractCheck Json?
+
+  /// Normalized request shape with secrets and volatile values removed.
+  requestShape   Json?
+  /// Normalized response shape (field names + types), not raw payload.
+  responseShape  Json?
+  /// Bounded, sanitized sample of the response body.
+  responseSample Json?
+  /// Subset of response headers of interest (Retry-After, pagination, ...).
+  headers        Json?
+  /// Error text for non-success outcomes (sanitized).
+  errorMessage   String?
+
+  /// Stable hash over the normalized shape, used for cheap comparisons.
+  shapeHash String?
+
+  createdAt DateTime @default(now())
+
+  findings Finding[]
+
+  @@index([nodeId, observedAt(sort: Desc)])
+  @@index([nodeId, outcome])
+  @@index([shapeHash])
+  @@index([providerKey, endpointKey, observedAt(sort: Desc)])
+  @@index([observedAt(sort: Desc)])
+  @@index([statusCode])
+  @@index([errorCategory])
+  @@index([correlationId])
+  @@map("observations")
+}
+
+/// Versioned expected behavior for an OPERATION node.
+model Baseline {
+  id      String         @id @default(uuid(7)) @db.Uuid
+  nodeId  String         @db.Uuid
+  node    DependencyNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  version Int
+  status  BaselineStatus @default(DRAFT)
+
+  /// Behavior summary: expected status codes, response schema, latency
+  /// percentiles, pagination style, error shape, invariants.
+  /// Immutable once the row exists (enforced by the baseline service).
+  summary     Json
+  sampleCount Int    @default(0)
+  /// Where this baseline came from: `seed`, `observations`, `manual`.
+  builtFrom   String @default("observations")
+
+  // Phase 3: identity and request context the baseline applies to.
+  providerKey String?
+  endpointKey String?
+  /// Request-context discriminator (e.g. sorted query keys); "" = any.
+  contextKey  String  @default("")
+  /// Detection thresholds / volatile fields snapshot used to build and compare.
+  config      Json    @default("{}")
+  /// Observation window the summary was built from.
+  windowFrom  DateTime?
+  windowTo    DateTime?
+
+  // Phase 3: review trail.
+  createdBy  String    @default("system")
+  reviewedBy String?
+  reviewedAt DateTime?
+  reviewNote String?
+  promotedBy String?
+
+  activatedAt  DateTime?
+  supersededAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  findings Finding[]
+
+  @@unique([nodeId, version])
+  @@index([nodeId, status])
+  @@index([providerKey, endpointKey, contextKey, status])
+  @@map("baselines")
+}
+
+// ---------------------------------------------------------------------------
+// Findings and repairs
+// ---------------------------------------------------------------------------
+
+/// A detected deviation of an observation from a baseline.
+model Finding {
+  id            String         @id @default(uuid(7)) @db.Uuid
+  nodeId        String         @db.Uuid
+  node          DependencyNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  baselineId    String         @db.Uuid
+  baseline      Baseline       @relation(fields: [baselineId], references: [id], onDelete: Cascade)
+  /// The observation that first produced this finding (if any).
+  observationId String?        @db.Uuid
+  observation   Observation?   @relation(fields: [observationId], references: [id], onDelete: SetNull)
+
+  category    FindingCategory
+  severity    Severity
+  status      FindingStatus   @default(OPEN)
+  /// 0..1 confidence that the finding is real and correctly classified.
+  confidence  Float
+  /// Deterministic fingerprint (category + normalized evidence) for dedupe.
+  fingerprint String
+  summary     String
+  /// Structured evidence (diff of fields, status counts, header values...).
+  evidence    Json
+
+  // Phase 3: detection provenance.
+  /// Detection rule id, e.g. `structural.field_removed`.
+  rule        String        @default("legacy")
+  kind        DetectionKind @default(STRUCTURAL)
+  providerKey String?
+  endpointKey String?
+  /// Bounded list of recent observation ids that exhibited the finding.
+  observationIds Json       @default("[]")
+
+  // Phase 3: lifecycle trail.
+  statusNote      String?
+  statusChangedBy String?
+  statusChangedAt DateTime?
+
+  firstSeenAt     DateTime  @default(now())
+  lastSeenAt      DateTime  @default(now())
+  occurrenceCount Int       @default(1)
+  resolvedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proposals     RepairProposal[]
+  impactReports ImpactReport[]
+  aiProposals   AiProposal[]
+
+  @@unique([baselineId, fingerprint])
+  @@index([nodeId, status])
+  @@index([status, severity])
+  @@index([category])
+  @@index([providerKey, endpointKey, status])
+  @@index([rule])
+  @@index([lastSeenAt(sort: Desc)])
+  @@map("findings")
+}
+
+/// A proposed remediation for a finding; holds the decision and gating state.
+model RepairProposal {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  findingId String  @db.Uuid
+  finding   Finding @relation(fields: [findingId], references: [id], onDelete: Cascade)
+
+  kind   RepairKind
+  status ProposalStatus @default(DRAFT)
+  risk   RiskLevel      @default(MEDIUM)
+
+  /// Why this repair was proposed and why it is (or is not) safe.
+  rationale           String
+  /// Preconditions that must hold before activation (validated at runtime).
+  preconditions       Json    @default("[]")
+  requiresHumanReview Boolean @default(true)
+  blockedReason       String?
+
+  createdBy  String    @default("system")
+  reviewedBy String?
+  reviewedAt DateTime?
+  reviewNote String?
+
+  // Phase 5: provenance of the proposal.
+  /// Registered rule that produced it (null for MANUAL_REVIEW proposals).
+  ruleKey     String?
+  ruleVersion Int?
+  /// True when the concrete transform was derived from finding evidence
+  /// (e.g. a rename candidate) rather than spelled out in the rule.
+  derived     Boolean @default(false)
+  /// Impact snapshot consulted when the proposal was built.
+  impactReportId String? @db.Uuid
+  /// Adapter the transform targets, e.g. `adapter:PaymentsAdapter`.
+  adapterKey  String?
+  endpointKey String?
+  /// How the rule matched the finding (paths, scores, alternatives).
+  matchEvidence Json   @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  versions   RepairVersion[]
+  executions RepairExecution[]
+
+  @@index([findingId, status])
+  @@index([status])
+  @@index([adapterKey, endpointKey, status])
+  @@map("repair_proposals")
+}
+
+/// An AI-assisted repair proposal (Phase 6). Stores what the model was
+/// shown (by reference and hash), what it returned (validated), and what the
+/// backend concluded. Never applied directly.
+model AiProposal {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  findingId String  @db.Uuid
+  finding   Finding @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  version   Int
+  status    AiProposalStatus
+
+  provider  String
+  model     String
+  requestId String?
+  usage     Json?
+  latencyMs Int?
+  attempts  Int     @default(1)
+
+  /// { oldObservationId, newObservationId, baselineId, baselineVersion, impactReportId, reportHash, reportBytes }
+  inputRefs         Json
+  /// Zod-validated model output (null on provider error).
+  proposal          Json?
+  /// Phase 5 transform compiled from the proposal (null when none / rejected).
+  compiledTransform Json?
+  policyIssues      Json  @default("[]")
+  /// Backend validation results against old and new samples.
+  validation        Json?
+  risk                RiskLevel @default(HIGH)
+  requiresHumanReview Boolean   @default(true)
+
+  errorCategory String?
+  errorMessage  String?
+
+  /// RepairRule created when a human promoted this proposal.
+  ruleId String? @db.Uuid
+
+  createdBy  String    @default("system")
+  reviewedBy String?
+  reviewedAt DateTime?
+  reviewNote String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([findingId, version])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("ai_proposals")
+}
+
+/// A versioned, immutable deterministic repair rule (Phase 5).
+model RepairRule {
+  id      String           @id @default(uuid(7)) @db.Uuid
+  key     String
+  version Int
+  status  RepairRuleStatus @default(DRAFT)
+  /// Validated RepairRuleSpec (see src/repair/schemas.ts).
+  spec     Json
+  checksum String
+
+  createdBy  String    @default("system")
+  approvedBy String?
+  approvedAt DateTime?
+  retiredAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([key, version])
+  @@index([status])
+  @@map("repair_rules")
+}
+
+/// One full run of the validation pipeline for a repair version (Phase 7).
+/// Immutable; the report embeds every stage, test and negative case.
+model RepairValidationRun {
+  id              String              @id @default(uuid(7)) @db.Uuid
+  proposalId      String              @db.Uuid
+  repairVersionId String              @db.Uuid
+  /// Checksum of the exact candidate spec that was validated.
+  checksum        String
+  status          ValidationRunStatus
+  stages          Json
+  report          Json
+  reportHash      String
+  totalTests      Int
+  mandatoryFailures Int
+  triggeredBy     String
+  durationMs      Int
+  createdAt       DateTime            @default(now())
+
+  @@index([proposalId, createdAt(sort: Desc)])
+  @@index([repairVersionId, status])
+  @@map("repair_validation_runs")
+}
+
+/// Approval evidence for a repair version (Phase 7). Append-only.
+model RepairApproval {
+  id              String           @id @default(uuid(7)) @db.Uuid
+  proposalId      String           @db.Uuid
+  repairVersionId String           @db.Uuid
+  validationRunId String?          @db.Uuid
+  actor           String
+  decision        ApprovalDecision
+  note            String?
+  createdAt       DateTime         @default(now())
+
+  @@index([proposalId, createdAt(sort: Desc)])
+  @@map("repair_approvals")
+}
+
+/// The explicit active-version pointer per adapter endpoint (Phase 7).
+/// Exactly one row per (adapterKey, endpointKey); `revision` increments on
+/// every change so concurrent writers detect each other.
+model AdapterActivation {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  adapterKey        String
+  endpointKey       String
+  activeVersionId   String?  @db.Uuid
+  previousVersionId String?  @db.Uuid
+  /// Last version that passed post-activation verification.
+  lastGoodVersionId String?  @db.Uuid
+  revision          Int      @default(0)
+  /// Safety thresholds for post-activation verification and auto-rollback.
+  safety            Json     @default("{}")
+  updatedBy         String   @default("system")
+  updatedAt         DateTime @updatedAt
+  createdAt         DateTime @default(now())
+
+  @@unique([adapterKey, endpointKey])
+  @@map("adapter_activations")
+}
+
+/// Append-only history of pointer changes with the evidence that justified them (Phase 7).
+model ActivationEvent {
+  id            String         @id @default(uuid(7)) @db.Uuid
+  adapterKey    String
+  endpointKey   String
+  kind          ActivationKind
+  fromVersionId String?        @db.Uuid
+  toVersionId   String?        @db.Uuid
+  proposalId    String?        @db.Uuid
+  revision      Int
+  actor         String
+  initiator     Initiator
+  /// Approvals, validation run id, report hash, policy decision, reason.
+  evidence      Json           @default("{}")
+  reason        String?
+  createdAt     DateTime       @default(now())
+
+  verifications VerificationRun[]
+
+  @@index([adapterKey, endpointKey, createdAt(sort: Desc)])
+  @@index([proposalId])
+  @@map("activation_events")
+}
+
+/// Post-activation verification: probes + normalisation with the active version (Phase 7).
+model VerificationRun {
+  id                 String          @id @default(uuid(7)) @db.Uuid
+  activationEventId  String          @db.Uuid
+  activationEvent    ActivationEvent @relation(fields: [activationEventId], references: [id], onDelete: Cascade)
+  adapterKey         String
+  endpointKey        String
+  versionId          String          @db.Uuid
+  probes             Int
+  probeErrors        Int
+  contractViolations Int
+  passed             Boolean
+  thresholds         Json
+  details            Json
+  /// NONE | AUTO_ROLLBACK
+  action             String          @default("NONE")
+  triggeredBy        String
+  createdAt          DateTime        @default(now())
+
+  @@index([adapterKey, endpointKey, createdAt(sort: Desc)])
+  @@map("verification_runs")
+}
+
+/// One reproducible run of a repair version against one payload (Phase 5).
+model RepairExecution {
+  id              String         @id @default(uuid(7)) @db.Uuid
+  proposalId      String         @db.Uuid
+  proposal        RepairProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  repairVersionId String         @db.Uuid
+  repairVersion   RepairVersion  @relation(fields: [repairVersionId], references: [id], onDelete: Cascade)
+
+  source        ExecutionSource
+  observationId String?         @db.Uuid
+  /// SHA-256 of canonical input / output; equal inputs must give equal outputs.
+  inputHash  String
+  outputHash String?
+  ok         Boolean
+  /// Redacted, bounded output when ok.
+  output     Json?
+  /// Structured rejection reasons when not ok.
+  rejections Json            @default("[]")
+  /// Step-by-step trace of what the adapter did.
+  trace      Json            @default("[]")
+  contractValid Boolean?
+  durationMs Int
+
+  executedBy String   @default("system")
+  createdAt  DateTime @default(now())
+
+  @@index([proposalId, createdAt(sort: Desc)])
+  @@index([repairVersionId, ok])
+  @@map("repair_executions")
+}
+
+/// An immutable, versioned adapter definition for a proposal.
+model RepairVersion {
+  id         String              @id @default(uuid(7)) @db.Uuid
+  proposalId String              @db.Uuid
+  proposal   RepairProposal      @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  version    Int
+  status     RepairVersionStatus @default(CANDIDATE)
+
+  /// Deterministic adapter spec (e.g. field mappings, retry policy).
+  spec     Json
+  /// Hash of `spec` for integrity checks and change detection.
+  checksum String
+
+  activatedAt   DateTime?
+  deactivatedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  testRuns   TestRun[]
+  executions RepairExecution[]
+
+  @@unique([proposalId, version])
+  @@index([proposalId, status])
+  @@map("repair_versions")
+}
+
+/// A regression run of a workflow against a repair version.
+model TestRun {
+  id              String         @id @default(uuid(7)) @db.Uuid
+  repairVersionId String         @db.Uuid
+  repairVersion   RepairVersion  @relation(fields: [repairVersionId], references: [id], onDelete: Cascade)
+  /// Workflow node that was exercised.
+  workflowId      String         @db.Uuid
+  workflow        DependencyNode @relation("TestRunWorkflow", fields: [workflowId], references: [id], onDelete: Cascade)
+
+  status      TestRunStatus @default(QUEUED)
+  triggeredBy String        @default("system")
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+  durationMs Int?
+  /// Per-check results: [{ check, passed, details }].
+  results    Json      @default("[]")
+  summary    String?
+
+  // Phase 7: which validation run produced it and which graph TEST node it stands for.
+  validationRunId String? @db.Uuid
+  testKey         String?
+  mandatory       Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([repairVersionId, status])
+  @@index([workflowId, createdAt(sort: Desc)])
+  @@index([validationRunId])
+  @@map("test_runs")
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+/// Append-only record of decisions and state changes.
+model AuditEvent {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  actorType ActorType @default(SYSTEM)
+  actorId   String    @default("system")
+  /// Dotted verb, e.g. `finding.created`, `repair.activated`.
+  action    String
+
+  entityType    AuditEntityType
+  entityId      String          @db.Uuid
+  /// Decision details; must never contain secrets.
+  details       Json            @default("{}")
+  /// Groups events from one request / probe / repair flow.
+  correlationId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId, createdAt(sort: Desc)])
+  @@index([correlationId])
+  @@index([createdAt(sort: Desc)])
+  @@map("audit_events")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9: URL monitors (API Guardian workflow)
+// ---------------------------------------------------------------------------
+
+enum MonitorStatus {
+  ACTIVE
+  PAUSED
+}
+
+enum MonitorAuthType {
+  NONE
+  BEARER
+  API_KEY
+  BASIC
+}
+
+enum MonitorBaselineStatus {
+  PENDING
+  APPROVED
+  SUPERSEDED
+  REJECTED
+}
+
+enum MonitorIncidentStatus {
+  OPEN
+  INVESTIGATING
+  AWAITING_FIX
+  RESOLVED
+}
+
+enum RecoveryProposalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PROMOTED
+  ROLLED_BACK
+}
+
+/// A user-registered URL under observation. The secret is encrypted at rest.
+model Monitor {
+  id          String          @id @default(uuid(7)) @db.Uuid
+  name        String
+  url         String
+  method      String          @default("GET")
+  environment String          @default("Production")
+  description String          @default("")
+  intervalSec Int             @default(300)
+  timeoutMs   Int             @default(5000)
+  authType    MonitorAuthType @default(NONE)
+  /// Header name for API_KEY auth (e.g. X-API-Key).
+  authHeader  String?
+  /// AES-256-GCM ciphertext of the credential; never returned by the API.
+  authSecretEnc String?
+  headers     Json            @default("{}")
+  body        Json?
+  expectedStatus Int?
+  /// Approve the first successful JSON response as the baseline automatically.
+  autoBaseline Boolean        @default(true)
+  status      MonitorStatus   @default(ACTIVE)
+  createdBy   String          @default("system")
+
+  nextRunAt      DateTime?
+  lastCheckedAt  DateTime?
+  lastOutcome    String?
+  lastStatusCode Int?
+  lastLatencyMs  Int?
+  /// Proposal currently applied to responses before comparison (self-healing adapter).
+  activeProposalId String?  @db.Uuid
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  checks    MonitorCheck[]
+  baselines MonitorBaseline[]
+  incidents MonitorIncident[]
+  mappings  FeatureMapping[]
+  proposals RecoveryProposal[]
+
+  @@index([status, nextRunAt])
+  @@map("monitors")
+}
+
+/// One execution of a monitor: sanitized evidence of what the URL returned.
+model MonitorCheck {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  monitorId  String   @db.Uuid
+  monitor    Monitor  @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  checkedAt  DateTime @default(now())
+  outcome    String
+  statusCode Int?
+  latencyMs  Int
+  responseBytes Int   @default(0)
+  parseOutcome  String
+  /// Redacted, bounded JSON body (null when none).
+  bodySample Json?
+  /// Flattened path -> type list.
+  fieldPaths Json?
+  shapeHash  String?
+  errorMessage String?
+  /// Diff against the approved baseline (null when no baseline or identical).
+  diff       Json?
+  /// Whether an active adapter was applied before comparison.
+  adapted    Boolean  @default(false)
+  incidentId String?  @db.Uuid
+  triggeredBy String  @default("scheduler")
+
+  @@index([monitorId, checkedAt(sort: Desc)])
+  @@map("monitor_checks")
+}
+
+/// Immutable snapshot of a response accepted as "normal".
+model MonitorBaseline {
+  id         String                @id @default(uuid(7)) @db.Uuid
+  monitorId  String                @db.Uuid
+  monitor    Monitor               @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  version    Int
+  status     MonitorBaselineStatus @default(PENDING)
+  checkId    String?               @db.Uuid
+  statusCode Int?
+  latencyMs  Int?
+  snapshot   Json
+  fieldPaths Json
+  shapeHash  String
+  approvedBy String?
+  approvedAt DateTime?
+  note       String?
+  createdAt  DateTime              @default(now())
+
+  @@unique([monitorId, version])
+  @@index([monitorId, status])
+  @@map("monitor_baselines")
+}
+
+/// A detected change between the approved baseline and a live response.
+model MonitorIncident {
+  id          String                @id @default(uuid(7)) @db.Uuid
+  monitorId   String                @db.Uuid
+  monitor     Monitor               @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  baselineId  String?               @db.Uuid
+  checkId     String?               @db.Uuid
+  fingerprint String
+  title       String
+  issueType   String
+  severity    String
+  status      MonitorIncidentStatus @default(OPEN)
+  detectedAt  DateTime              @default(now())
+  lastSeenAt  DateTime              @default(now())
+  resolvedAt  DateTime?
+  occurrenceCount Int               @default(1)
+  previousResponse Json?
+  latestResponse   Json?
+  diffs       Json                  @default("[]")
+  statusCode  Int?
+  latencyMs   Int?
+  assignee    String?
+  statusChangedBy String?
+  note        String?
+  updatedAt   DateTime              @updatedAt
+
+  proposals RecoveryProposal[]
+
+  @@index([monitorId, status, detectedAt(sort: Desc)])
+  @@index([fingerprint, status])
+  @@map("monitor_incidents")
+}
+
+/// Which application feature reads which field of a monitored response.
+model FeatureMapping {
+  id          String  @id @default(uuid(7)) @db.Uuid
+  monitorId   String  @db.Uuid
+  monitor     Monitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  feature     String
+  jsonPath    String
+  route       String?
+  impactLevel String  @default("High")
+  description String?
+  symptom     String?
+  createdBy   String  @default("system")
+  createdAt   DateTime @default(now())
+
+  @@index([monitorId])
+  @@map("feature_mappings")
+}
+
+/// A data-driven adapter proposal for an incident. Never code.
+model RecoveryProposal {
+  id          String                 @id @default(uuid(7)) @db.Uuid
+  incidentId  String                 @db.Uuid
+  incident    MonitorIncident        @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  monitorId   String                 @db.Uuid
+  monitor     Monitor                @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  status      RecoveryProposalStatus @default(PENDING)
+  proposedSolution String
+  transform   Json
+  assumptions Json                   @default("[]")
+  risks       Json                   @default("[]")
+  requiresManualReview Boolean       @default(false)
+  targetEnvironment String           @default("Staging")
+  createdBy   String                 @default("system")
+  approver    String?
+  approvedAt  DateTime?
+  rejectedBy  String?
+  rejectedAt  DateTime?
+  promotedBy  String?
+  promotedAt  DateTime?
+  validation  Json?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  @@index([incidentId])
+  @@index([monitorId, status])
+  @@map("recovery_proposals")
+}
+
+/// Key/value application settings (monitoring defaults, operator profile).
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedBy String   @default("system")
+  updatedAt DateTime @updatedAt
+
+  @@map("app_settings")
+}
