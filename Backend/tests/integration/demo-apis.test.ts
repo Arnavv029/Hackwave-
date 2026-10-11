@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { buildTestApp, TEST_OPERATOR_TOKEN, type TestApp } from '../setup/app.js';
 import { DEMO_CATALOG } from '../../src/mocks/demo.router.js';
+import { STARTER_KEYS } from '../../src/routes/demo.js';
 
 /** The showcase APIs really misbehave after `driftAfter` calls, and the monitor engine catches each failure type. */
 describe('showcase problem APIs', () => {
@@ -45,13 +46,17 @@ describe('showcase problem APIs', () => {
   });
 
   it('registers the whole catalogue with mappings in one call and each endpoint produces its advertised detection', async () => {
-    const reg = await request(app.app).post('/api/demo/register-all').set(op).send({ actor: 'demo', intervalSec: 60 });
+    // Without `all` only the small starter set is registered, so the initial UI stays readable.
+    const starter = await request(app.app).post('/api/demo/register-all').set(op).send({ actor: 'demo', intervalSec: 60 });
+    expect(starter.status).toBe(201);
+    expect((starter.body.data as Array<{ key: string }>).map((r) => r.key).sort()).toEqual([...STARTER_KEYS].sort());
+    const reg = await request(app.app).post('/api/demo/register-all').set(op).send({ actor: 'demo', intervalSec: 60, all: true });
     expect(reg.status).toBe(201);
     expect(reg.body.data).toHaveLength(DEMO_CATALOG.length);
     // reports-slow answers within the test's shortened slowMs, so it is healthy here.
     const expectedHealth: Record<string, string> = { 'legacy-export': 'Failing', retired: 'Failing' };
     for (const r of reg.body.data as Array<{ key: string; created: boolean; health: string }>) {
-      expect(r.created).toBe(true);
+      expect(r.created, r.key).toBe(!STARTER_KEYS.includes(r.key));
       if (r.key !== 'flaky-gateway') expect(r.health, r.key).toBe(expectedHealth[r.key] ?? 'Healthy');
     }
     // Idempotent.

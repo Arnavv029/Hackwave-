@@ -365,7 +365,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" disabled={demoBusy || !demo} onClick={() => void demoAction(() => guardian.demo.registerAll(session.actor || 'demo', 30), 'Registered showcase APIs (30s interval); first checks are healthy, drift starts after a few checks')} className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold disabled:opacity-50">Register all</button>
+            <button type="button" disabled={demoBusy || !demo} onClick={() => void demoAction(() => guardian.demo.registerAll(session.actor || 'demo', 60), 'Registered the 5 starter APIs (60s interval); first checks are healthy, drift starts after a few minutes')} className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold disabled:opacity-50">Register starter set (5)</button>
             <button type="button" disabled={demoBusy || !demo} onClick={() => void demoAction(() => guardian.demo.reset(), 'Counters reset: all showcase APIs are healthy again')} className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold disabled:opacity-50">Reset all</button>
           </div>
         </div>

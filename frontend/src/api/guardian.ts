@@ -49,7 +49,7 @@ export const guardian = {
   },
   demo: {
     catalog: () => d(api<W<DemoCatalogDto>>('/api/demo/catalog')),
-    registerAll: (actor: string, intervalSec = 30, keys?: string[]) => d(api<W<Array<{ key: string; monitorId: string; created: boolean; health: string }>>>('/api/demo/register-all', { method: 'POST', body: { actor, intervalSec, ...(keys ? { keys } : {}) } })),
+    registerAll: (actor: string, intervalSec = 60, keys?: string[]) => d(api<W<Array<{ key: string; monitorId: string; created: boolean; health: string }>>>('/api/demo/register-all', { method: 'POST', body: { actor, intervalSec, ...(keys ? { keys } : {}) } })),
     drift: (key: string) => d(api<W<unknown>>(`/api/demo/${enc(key)}/drift`, { method: 'POST' })),
     restore: (key: string) => d(api<W<unknown>>(`/api/demo/${enc(key)}/restore`, { method: 'POST' })),
     reset: (driftAfterSec?: number) => d(api<W<{ driftAfterMs: number }>>('/api/demo/reset', { method: 'POST', body: driftAfterSec === undefined ? {} : { driftAfterSec } })),

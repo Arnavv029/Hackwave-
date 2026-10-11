@@ -47,6 +47,11 @@ export const RecoveryValidationPage: React.FC<RecoveryValidationPageProps> = ({
   selectedProposalId,
 }) => {
   const [localId, setLocalId] = useState<string | undefined>(undefined);
+  // Only proposals that still need a decision are listed by default; finished ones stay behind a toggle.
+  const [showFinished, setShowFinished] = useState(false);
+  const isFinished = (p: RecoveryProposal) => ['Promoted', 'Rejected', 'Rolled Back'].includes(p.statusLabel ?? p.status);
+  const visibleProposals = proposals.filter((p) => showFinished || !isFinished(p) || p.id === localId || p.id === selectedProposalId);
+  const finishedCount = proposals.filter(isFinished).length;
   const activeId = localId ?? selectedProposalId ?? proposals.find((p) => p.status === 'Pending')?.id ?? proposals[0]?.id;
   const setActiveId = (id: string) => {
     setLocalId(id);
@@ -162,8 +167,16 @@ export const RecoveryValidationPage: React.FC<RecoveryValidationPageProps> = ({
         <div className="lg:col-span-5 space-y-5">
           {/* Proposal List */}
           <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-xs space-y-2.5">
-            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider px-1">Proposals ({proposals.length})</h3>
-            {proposals.map((prop) => (
+            <div className="flex items-center justify-between px-1">
+              <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Proposals ({visibleProposals.length}{!showFinished && finishedCount ? ` of ${proposals.length}` : ''})</h3>
+              {finishedCount > 0 && (
+                <button type="button" onClick={() => setShowFinished((v) => !v)} className="text-[11px] font-semibold text-blue-600 hover:text-blue-700">
+                  {showFinished ? 'Hide finished' : `Show ${finishedCount} finished`}
+                </button>
+              )}
+            </div>
+            {visibleProposals.length === 0 && <p className="text-xs text-slate-400 py-6 text-center">No proposals waiting for a decision.</p>}
+            {visibleProposals.map((prop) => (
               <div
                 key={prop.id}
                 onClick={() => setActiveId(prop.id)}

@@ -48,7 +48,8 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
     onSelectIncident(id);
   };
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string>('All');
+  // Default to open incidents so the page only shows what still needs attention.
+  const [statusFilter, setStatusFilter] = useState<string>('Open');
   const [severityFilter, setSeverityFilter] = useState<string>('All');
 
   // Inline new mapping form state
