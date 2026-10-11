@@ -1,7 +1,12 @@
-# DriftGuard backend (Phases 1–7)
+# DriftGuard backend (Phases 1–9)
 
-The Phase 8 dashboard lives in [`../Frontend`](../Frontend/README.md) and
-talks to this API through a dev proxy (see [docs/PHASE8.md](../../docs/PHASE8.md)).
+Phase 9 adds the **API Guardian** workflow: register any URL, baseline it,
+diff every response, open incidents, trace impact through feature mappings,
+draft/validate/promote declarative adapters, all streamed live to the
+[`../frontend`](../frontend/README.md) dashboard. See
+[docs/PHASE9.md](../../docs/PHASE9.md). Run the backend with `npm run dev`
+(scheduler on, `MONITOR_SECRET_KEY` set in `.env`) and the frontend with
+`npm run dev` in `../frontend`.
 
 Control plane for API dependency monitoring and self-healing. Phase 1 delivers
 the foundation: project tooling, the PostgreSQL data model, environment
@@ -54,6 +59,8 @@ src/repair/               Rule schemas, internal contracts + adapters, engine, m
 src/routes/ai.ts          AI proposals (operator-only)
 src/ai/                   Change report, provider interface (Anthropic + mock), policy, stores, service
 src/routes/activations.ts Active-version pointers, verification, rollback, safety
+src/routes/guardian.ts    Phase 9: monitors, incidents, proposals, mappings, settings, audit, SSE
+src/guardian/             Diff algorithm, JSON path, declarative adapter, SSRF guard, secrets, engine, scheduler, service
 src/activation/           Validation pipeline, regression harnesses, approval policy, stores, lifecycle service
 src/providers/contracts.ts Explicit provider endpoint contracts (Zod)
 src/observation/          Provider client, schemas, shape analysis, store, engine

@@ -68,6 +68,13 @@ export interface RegisteredApi {
   description: string;
   uptime: string;
   history: { time: string; latency: number; status: number }[];
+  /** Backend extras */
+  openIncidentCount?: number;
+  pendingBaselineId?: string;
+  activeProposalId?: string | null;
+  lastOutcome?: string | null;
+  lastError?: string | null;
+  statusOnly?: boolean;
 }
 
 export interface AffectedFeatureMapping {
@@ -114,6 +121,8 @@ export interface Incident {
   remediations?: any[];
   registeredMappings?: { feature: string; api: string; jsonPath: string }[];
   proposalId?: string;
+  occurrenceCount?: number;
+  lastSeenAt?: string;
   assignee: {
     name: string;
     role: string;
@@ -138,6 +147,7 @@ export interface ValidationResult {
   testTime: string;
   assertions: ValidationAssertion[];
   errorDetails?: string;
+  logs?: string[];
 }
 
 export interface RecoveryProposal {
@@ -150,6 +160,12 @@ export interface RecoveryProposal {
   assumptions: string[];
   risks: string[];
   status: 'Pending' | 'Approved' | 'Rejected';
+  /** Exact backend status label (Pending, Approved, Rejected, Promoted, Rolled Back). */
+  statusLabel?: string;
+  isActive?: boolean;
+  requiresManualReview?: boolean;
+  promotedBy?: string;
+  createdBy?: string;
   approver?: string;
   createdAt: string;
   targetEnvironment: EnvironmentType;

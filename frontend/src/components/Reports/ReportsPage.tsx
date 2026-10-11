@@ -15,25 +15,36 @@ import {
   ArrowRight,
   Database
 } from 'lucide-react';
-import { RegisteredApi, Incident, RecoveryProposal } from '../../types';
+import type { RegisteredApi, Incident, RecoveryProposal } from '../../types';
 
 interface ReportsPageProps {
   apis: RegisteredApi[];
   incidents: Incident[];
   proposals: RecoveryProposal[];
+  organization: string;
   showToast: (msg: string) => void;
+}
+
+function docHash(input: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
 }
 
 export const ReportsPage: React.FC<ReportsPageProps> = ({
   apis,
   incidents,
   proposals,
+  organization,
   showToast,
 }) => {
   const [selectedApiScope, setSelectedApiScope] = useState<string>('All');
   const [selectedRange, setSelectedRange] = useState<string>('7d');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [reportGeneratedAt, setReportGeneratedAt] = useState<string>('11 Oct 2026, 12:20 UTC');
+  const [reportGeneratedAt, setReportGeneratedAt] = useState<string>(new Date().toUTCString());
 
   const handleGenerate = () => {
     setIsGenerating(true);
@@ -59,6 +70,14 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
   const reportIncidents = selectedApiScope === 'All'
     ? incidents
     : incidents.filter(i => i.apiName === selectedApiScope);
+  const reportProposals = selectedApiScope === 'All' ? proposals : proposals.filter((p) => p.apiName === selectedApiScope);
+  const openCount = reportIncidents.filter((i) => i.status !== 'Resolved').length;
+  const highest = reportIncidents.find((i) => i.severity === 'Critical') ?? reportIncidents.find((i) => i.severity === 'High');
+  const validated = reportProposals.filter((p) => p.validationResult?.status === 'Passed');
+  const promoted = reportProposals.filter((p) => p.statusLabel === 'Promoted');
+  const affectedFeatureCount = new Set(reportIncidents.flatMap((i) => (i.affectedFeatures ?? []).map((f) => f.featureName))).size;
+  const documentId = `RPT-${new Date(reportGeneratedAt).toISOString().slice(0, 10).replace(/-/g, '')}-${docHash(reportGeneratedAt + selectedApiScope).slice(0, 4).toUpperCase()}`;
+  const contentHash = docHash(JSON.stringify({ apis: reportApis.map((a) => [a.id, a.status]), incidents: reportIncidents.map((i) => [i.id, i.status]), proposals: reportProposals.map((p) => [p.id, p.statusLabel]) }));
 
   return (
     <div className="space-y-6">
@@ -141,7 +160,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
             <p><span className="font-semibold text-slate-700">Generated:</span> {reportGeneratedAt}</p>
             <p><span className="font-semibold text-slate-700">Period:</span> Last {selectedRange}</p>
             <p><span className="font-semibold text-slate-700">Scope:</span> {selectedApiScope}</p>
-            <p><span className="font-semibold text-slate-700">Document ID:</span> <span className="font-mono">RPT-2026-OCT-891</span></p>
+            <p><span className="font-semibold text-slate-700">Document ID:</span> <span className="font-mono">{documentId}</span></p>
           </div>
         </div>
 
@@ -152,7 +171,13 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
             1. Executive Summary
           </h3>
           <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 text-xs sm:text-sm text-slate-700 leading-relaxed">
-            During the monitored period, API Guardian performed continuous synthetic probes across {reportApis.length} registered API endpoints. A total of {reportIncidents.length} schema and latency incidents were identified, including 1 high-severity contract rename on <strong className="text-slate-900">User Profile API</strong>. Downstream impact analysis successfully identified potentially degraded UI features prior to end-user complaints. A safe response adapter was generated, approved, and validated in staging sandbox tests with 100% assertions passed.
+            API Guardian performs scheduled probes against {reportApis.length} registered API endpoint{reportApis.length === 1 ? '' : 's'} and compares every JSON response with its approved baseline.
+            {' '}{reportIncidents.length === 0
+              ? 'No schema, availability or latency incidents have been recorded in this scope.'
+              : `${reportIncidents.length} incident${reportIncidents.length === 1 ? '' : 's'} ${reportIncidents.length === 1 ? 'was' : 'were'} identified (${openCount} still open)${highest ? `, the most severe being a ${highest.severity.toLowerCase()} ${highest.issueType?.toLowerCase() ?? 'change'} on ` : '.'}`}
+            {highest && <strong className="text-slate-900">{highest.apiName}</strong>}{highest ? '.' : ''}
+            {' '}{affectedFeatureCount > 0 ? `Registered field mappings traced the impact to ${affectedFeatureCount} application feature${affectedFeatureCount === 1 ? '' : 's'} before end-user complaints.` : 'No registered feature mappings were affected.'}
+            {' '}{reportProposals.length === 0 ? 'No adapter proposals were needed.' : `${reportProposals.length} declarative adapter proposal${reportProposals.length === 1 ? '' : 's'} ${reportProposals.length === 1 ? 'was' : 'were'} drafted; ${validated.length} passed sandbox validation and ${promoted.length} ${promoted.length === 1 ? 'is' : 'are'} active at the gateway.`}
           </div>
         </div>
 
@@ -207,6 +232,7 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
             3. Detected Changes & Downstream Impact
           </h3>
           <div className="space-y-3">
+            {reportIncidents.length === 0 && <p className="text-xs text-slate-400 p-4 rounded-xl border border-slate-200 bg-white">No detected changes in this scope.</p>}
             {reportIncidents.map((incident) => (
               <div key={incident.id} className="p-4 rounded-xl border border-slate-200 bg-white space-y-2">
                 <div className="flex items-center justify-between text-xs">
@@ -240,16 +266,24 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
             <span className="w-2 h-2 rounded-full bg-blue-600" />
             4. Recovery & Validation Outcomes
           </h3>
-          <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 text-xs space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-slate-900">Proposal PROP-001 (User Profile API Response Transformation)</span>
-              <span className="px-2 py-0.5 rounded font-bold text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200">
-                Validated in Staging
-              </span>
-            </div>
-            <p className="text-slate-600">
-              Target contract test <span className="font-mono text-slate-800 font-semibold">VAL-RUN-804</span> executed against mock downstream consumers. All 4 assertions confirmed compatible schema output with 14ms latency.
-            </p>
+          <div className="space-y-2">
+            {reportProposals.length === 0 && <p className="text-xs text-slate-400 p-4 rounded-xl border border-slate-200 bg-slate-50">No recovery proposals in this scope.</p>}
+            {reportProposals.map((p) => (
+              <div key={p.id} className="p-4 rounded-xl border border-slate-200 bg-slate-50 text-xs space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-slate-900">Proposal {p.id.slice(0, 8)} ({p.apiName})</span>
+                  <span className={`px-2 py-0.5 rounded font-bold text-[11px] border ${p.statusLabel === 'Promoted' ? 'bg-blue-50 text-blue-700 border-blue-200' : p.validationResult?.status === 'Passed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+                    {p.statusLabel ?? p.status}{p.validationResult ? ` · validation ${p.validationResult.status}` : ' · not validated'}
+                  </span>
+                </div>
+                <p className="text-slate-600">{p.proposedSolution}</p>
+                {p.validationResult && (
+                  <p className="text-slate-600">
+                    Contract test <span className="font-mono text-slate-800 font-semibold">{p.validationResult.runId}</span>: {p.validationResult.assertions.filter((a) => a.passed).length}/{p.validationResult.assertions.length} assertions passed in {p.validationResult.latencyMs}ms.
+                  </p>
+                )}
+              </div>
+            ))}
           </div>
         </div>
 
@@ -260,16 +294,24 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
             5. Recommendations & Next Steps
           </h3>
           <div className="p-4 rounded-xl bg-blue-50/60 border border-blue-200/70 text-xs text-slate-800 space-y-2">
-            <p>1. Deploy the staging adapter <strong className="text-blue-900">PROP-001</strong> to Edge Gateway to protect frontend applications.</p>
-            <p>2. Notify third-party provider regarding breaking deprecation of the <code className="font-mono bg-white px-1 py-0.5 rounded border border-blue-200 text-blue-700">name</code> field.</p>
-            <p>3. Update internal client models to gracefully fall back between <code className="font-mono">name</code> and <code className="font-mono">display_name</code>.</p>
+            {(() => {
+              const recs: string[] = [];
+              for (const p of reportProposals.filter((x) => x.status === 'Approved' && x.validationResult?.status === 'Passed' && x.statusLabel !== 'Promoted')) recs.push(`Promote validated adapter ${p.id.slice(0, 8)} for ${p.apiName} to the gateway.`);
+              for (const p of reportProposals.filter((x) => x.status === 'Pending')) recs.push(`Review pending proposal ${p.id.slice(0, 8)} for ${p.apiName}${p.requiresManualReview ? ' (manual review required)' : ''}.`);
+              for (const i of reportIncidents.filter((x) => x.status !== 'Resolved')) recs.push(`Confirm the ${i.issueType?.toLowerCase() ?? 'change'} on ${i.apiName} with the provider${i.diffs?.length ? ` (${i.diffs.map((d) => d.fieldName).slice(0, 3).join(', ')})` : ''}.`);
+              for (const a of reportApis.filter((x) => !x.baselineApproved)) recs.push(`Approve a baseline for ${a.name} so drift detection can start.`);
+              const unmapped = reportApis.filter((a) => !reportIncidents.some((i) => i.apiName === a.name && (i.registeredMappings?.length ?? 0) > 0));
+              if (unmapped.length && reportIncidents.length) recs.push('Register feature-to-field mappings for APIs without them to trace impact automatically.');
+              if (recs.length === 0) recs.push('No action required: all monitored APIs match their baselines and no proposals are pending.');
+              return recs.slice(0, 6).map((r, i) => <p key={i}>{i + 1}. {r}</p>);
+            })()}
           </div>
         </div>
 
         {/* Report Metadata Footer */}
         <div className="pt-6 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px] text-slate-400">
-          <span>Confidential — Prepared exclusively for Apex Cloud Systems</span>
-          <span className="font-mono">Hash: sha256:49f2b80a18c947238</span>
+          <span>Confidential — Prepared for {organization || 'your organization'}</span>
+          <span className="font-mono">Content hash: {contentHash}</span>
         </div>
       </div>
     </div>

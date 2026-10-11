@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, Bell, Share2, Menu, X, CheckCircle2, AlertTriangle, ArrowRight, ShieldCheck, Globe } from 'lucide-react';
-import { NavSection } from '../types';
+import type { NavSection, Incident, RecoveryProposal } from '../types';
 
 interface HeaderProps {
   activeSection: NavSection;
@@ -10,6 +10,12 @@ interface HeaderProps {
   globalSearch: string;
   onSearchChange: (value: string) => void;
   onNavigateSection: (section: NavSection) => void;
+  incidents: Incident[];
+  proposals: RecoveryProposal[];
+  live: boolean;
+  canOperate: boolean;
+  actor: string;
+  onOpenAuth: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -20,6 +26,12 @@ export const Header: React.FC<HeaderProps> = ({
   globalSearch,
   onSearchChange,
   onNavigateSection,
+  incidents,
+  proposals,
+  live,
+  canOperate,
+  actor,
+  onOpenAuth,
 }) => {
   const [showNotifications, setShowNotifications] = useState(false);
   const notificationRef = useRef<HTMLDivElement>(null);
@@ -34,31 +46,11 @@ export const Header: React.FC<HeaderProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  const openIncidents = incidents.filter((i) => i.status !== 'Resolved');
   const alerts = [
-    {
-      id: 1,
-      type: 'warning',
-      title: 'INC-001: User Profile API Drift',
-      message: 'Field `name` omitted, replaced by `display_name` in latest check.',
-      time: '12m ago',
-      section: 'Incidents' as NavSection,
-    },
-    {
-      id: 2,
-      type: 'info',
-      title: 'Validation Suite Succeeded',
-      message: 'Staging contract test passed 4/4 assertions for PROP-001.',
-      time: '1h ago',
-      section: 'Recovery' as NavSection,
-    },
-    {
-      id: 3,
-      type: 'success',
-      title: 'Baseline Locked',
-      message: 'Orders & Fulfillment API golden contract committed by Alex Rivera.',
-      time: '3h ago',
-      section: 'Dashboard' as NavSection,
-    },
+    ...openIncidents.slice(0, 4).map((i) => ({ id: `inc-${i.id}`, type: i.severity === 'Critical' ? 'warning' : 'info', title: `${i.apiName ?? 'API'}: ${i.issueType ?? 'change'}`, message: i.title, time: i.detectedAt ?? '', section: 'Incidents' as NavSection })),
+    ...proposals.filter((p) => p.status === 'Pending').slice(0, 2).map((p) => ({ id: `prop-${p.id}`, type: 'info', title: 'Repair proposal awaiting review', message: p.proposedSolution, time: p.createdAt, section: 'Recovery' as NavSection })),
+    ...proposals.filter((p) => p.validationResult?.status === 'Passed').slice(0, 1).map((p) => ({ id: `val-${p.id}`, type: 'success', title: 'Validation suite passed', message: `${p.validationResult?.testName}: ${p.validationResult?.assertions.filter((a) => a.passed).length}/${p.validationResult?.assertions.length} assertions`, time: p.validationResult?.testTime ?? '', section: 'Recovery' as NavSection })),
   ];
 
   const getSectionTitle = (sec: NavSection) => {
@@ -104,7 +96,7 @@ export const Header: React.FC<HeaderProps> = ({
             aria-label="Notifications"
           >
             <Bell className="w-4 h-4" />
-            <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-amber-500 ring-2 ring-white" />
+            {openIncidents.length > 0 && <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-amber-500 ring-2 ring-white" />}
           </button>
 
           {/* Notifications Dropdown */}
@@ -114,7 +106,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <div className="flex items-center gap-2">
                   <span className="font-semibold text-sm text-slate-900">API Guardian Alerts</span>
                   <span className="bg-amber-50 text-amber-700 text-xs px-2 py-0.5 rounded-full font-bold border border-amber-200">
-                    1 Active Drift
+                    {openIncidents.length} Active
                   </span>
                 </div>
                 <button 
@@ -126,6 +118,7 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
 
               <div className="divide-y divide-slate-100 max-h-80 overflow-y-auto">
+                {alerts.length === 0 && <p className="p-4 text-xs text-slate-400">All quiet: no open incidents or pending proposals.</p>}
                 {alerts.map((alert) => (
                   <div 
                     key={alert.id} 
@@ -181,6 +174,16 @@ export const Header: React.FC<HeaderProps> = ({
             className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200/90 rounded-xl text-xs sm:text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 shadow-xs transition-all"
           />
         </div>
+
+        {/* Session */}
+        <button
+          onClick={onOpenAuth}
+          className={`flex items-center gap-1.5 px-3 py-2 border rounded-xl text-xs font-semibold transition-colors shadow-xs ${canOperate ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}
+          title={canOperate ? 'Operator session' : 'Read-only: sign in with the operator token'}
+        >
+          <span className={`w-2 h-2 rounded-full ${live ? 'bg-emerald-500' : 'bg-slate-300'}`} title={live ? 'Live updates connected' : 'Live updates disconnected'} />
+          <span className="hidden sm:inline">{canOperate ? (actor || 'operator') : 'Read-only'}</span>
+        </button>
 
         {/* Public Website Preview Action */}
         <button

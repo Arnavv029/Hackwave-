@@ -17,22 +17,36 @@ import {
   FileCode,
   Tag
 } from 'lucide-react';
-import { Incident, AffectedFeatureMapping } from '../../types';
+import type { Incident } from '../../types';
 
 interface IncidentImpactPageProps {
   incidents: Incident[];
+  selectedIncidentId?: string;
+  onSelectIncident: (incidentId: string) => void;
   onSelectProposal: (proposalId: string) => void;
   onNavigateSection: (section: 'Recovery' | 'Dashboard') => void;
-  showToast: (msg: string) => void;
+  onChangeStatus: (incidentId: string, status: Incident['status']) => Promise<void>;
+  onAddMapping: (monitorId: string, feature: string, jsonPath: string, route?: string) => Promise<void>;
+  onRequestProposal: (incidentId: string) => Promise<void>;
+  showToast: (msg: string, kind?: 'ok' | 'error') => void;
 }
 
 export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
   incidents,
+  selectedIncidentId: selectedFromParent,
+  onSelectIncident,
   onSelectProposal,
   onNavigateSection,
-  showToast,
+  onChangeStatus,
+  onAddMapping,
+  onRequestProposal,
 }) => {
-  const [selectedIncidentId, setSelectedIncidentId] = useState<string>(incidents[0]?.id || 'INC-001');
+  const [localSelectedId, setLocalSelectedId] = useState<string | undefined>(undefined);
+  const selectedIncidentId = localSelectedId ?? selectedFromParent ?? incidents.find((i) => i.status !== 'Resolved')?.id ?? incidents[0]?.id;
+  const setSelectedIncidentId = (id: string) => {
+    setLocalSelectedId(id);
+    onSelectIncident(id);
+  };
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [severityFilter, setSeverityFilter] = useState<string>('All');
@@ -40,10 +54,11 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
   // Inline new mapping form state
   const [newFeatureName, setNewFeatureName] = useState('');
   const [newJsonPath, setNewJsonPath] = useState('$.');
+  const [newRoute, setNewRoute] = useState('');
   const [showAddMapping, setShowAddMapping] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  // Active incident state
-  const [incidentList, setIncidentList] = useState<Incident[]>(incidents);
+  const incidentList = incidents;
   const activeIncident = incidentList.find((i) => i.id === selectedIncidentId) || incidentList[0];
 
   // Filtering
@@ -57,39 +72,29 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
     return matchesSearch && matchesStatus && matchesSeverity;
   });
 
-  const handleStatusChange = (newStatus: Incident['status']) => {
-    setIncidentList((prev) => 
-      prev.map((inc) => inc.id === activeIncident.id ? { ...inc, status: newStatus } : inc)
-    );
-    showToast(`Updated ${activeIncident.id} status to ${newStatus}`);
+  const handleStatusChange = async (newStatus: Incident['status']) => {
+    if (!activeIncident) return;
+    setBusy(true);
+    try {
+      await onChangeStatus(activeIncident.id, newStatus);
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const handleAddNewMapping = (e: React.FormEvent) => {
+  const handleAddNewMapping = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newFeatureName.trim() || !newJsonPath.trim()) return;
-
-    const newMapping = {
-      feature: newFeatureName,
-      api: activeIncident.apiName || 'General API',
-      jsonPath: newJsonPath
-    };
-
-    setIncidentList((prev) =>
-      prev.map((inc) => {
-        if (inc.id === activeIncident.id) {
-          return {
-            ...inc,
-            registeredMappings: [...(inc.registeredMappings || []), newMapping]
-          };
-        }
-        return inc;
-      })
-    );
-
-    showToast(`Registered field mapping: ${newFeatureName} → ${newJsonPath}`);
-    setNewFeatureName('');
-    setNewJsonPath('$.');
-    setShowAddMapping(false);
+    if (!activeIncident?.apiId || !newFeatureName.trim() || !newJsonPath.trim()) return;
+    setBusy(true);
+    try {
+      await onAddMapping(activeIncident.apiId, newFeatureName.trim(), newJsonPath.trim(), newRoute.trim() || undefined);
+      setNewFeatureName('');
+      setNewJsonPath('$.');
+      setNewRoute('');
+      setShowAddMapping(false);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -162,6 +167,9 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
 
             {/* Incident Cards List */}
             <div className="space-y-2.5 max-h-[680px] overflow-y-auto pr-0.5">
+              {filteredIncidents.length === 0 && (
+                <p className="text-xs text-slate-400 py-8 text-center">No incidents{incidentList.length ? ' match these filters' : ' detected yet. When a monitored response drifts from its baseline, it shows up here'}.</p>
+              )}
               {filteredIncidents.map((incident) => {
                 const isSelected = incident.id === activeIncident?.id;
                 const isCrit = incident.severity === 'Critical';
@@ -240,7 +248,8 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
                     <span className="text-xs text-slate-500 font-medium">Status:</span>
                     <select
                       value={activeIncident.status}
-                      onChange={(e) => handleStatusChange(e.target.value as Incident['status'])}
+                      disabled={busy}
+                      onChange={(e) => void handleStatusChange(e.target.value as Incident['status'])}
                       className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800"
                     >
                       <option value="Open">Open</option>
@@ -257,8 +266,12 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
                     Detected: {activeIncident.detectedAt}
                   </span>
                   <span className="flex items-center gap-1.5">
+                    <Activity className="w-3.5 h-3.5 text-slate-400" />
+                    Seen {activeIncident.occurrenceCount ?? 1}× · last {activeIncident.lastSeenAt ?? activeIncident.detectedAt}
+                  </span>
+                  <span className="flex items-center gap-1.5">
                     <User className="w-3.5 h-3.5 text-slate-400" />
-                    Assignee: {activeIncident.assignee.name}
+                    {activeIncident.assignee.name} · {activeIncident.assignee.role}
                   </span>
                 </div>
               </div>
@@ -283,9 +296,17 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
                       </span>
                       <span className="text-[10px] text-slate-400">Approved</span>
                     </div>
-                    <pre className="text-slate-800 leading-relaxed overflow-x-auto text-[11px] max-h-48">
-                      {activeIncident.previousResponse}
-                    </pre>
+                    {activeIncident.previousResponse === '(no approved baseline snapshot)' ? (
+                      <div className="text-[11px] font-sans text-slate-600 leading-relaxed space-y-1.5">
+                        <p className="font-semibold text-slate-800">No baseline yet.</p>
+                        <p>This API has never returned a successful response, so there is nothing to compare against. The failure below happened on the first check ({activeIncident.issueType}).</p>
+                        <p>Fix the URL or credentials (Dashboard → row actions) or wait for the endpoint to answer; the first successful JSON response becomes the baseline and this incident resolves on its own.</p>
+                      </div>
+                    ) : (
+                      <pre className="text-slate-800 leading-relaxed overflow-x-auto text-[11px] max-h-48">
+                        {activeIncident.previousResponse}
+                      </pre>
+                    )}
                   </div>
 
                   {/* Latest Response */}
@@ -305,13 +326,14 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
 
                 {/* Diff Badges */}
                 <div className="mt-3 space-y-1.5">
+                  {(activeIncident.diffs || []).length === 0 && <p className="text-xs text-slate-400">No field-level differences recorded for this incident.</p>}
                   {(activeIncident.diffs || []).map((diff, index) => (
-                    <div key={index} className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs flex items-center justify-between">
+                    <div key={index} className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${
-                          diff.changeType === 'removed' ? 'bg-rose-100 text-rose-700' : 'bg-blue-100 text-blue-700'
+                          diff.changeType === 'removed' ? 'bg-rose-100 text-rose-700' : diff.changeType === 'renamed' ? 'bg-amber-100 text-amber-700' : diff.changeType === 'type_mismatch' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
                         }`}>
-                          {diff.changeType}
+                          {diff.changeType.replace('_', ' ')}
                         </span>
                         <span className="font-mono font-bold text-slate-900">{diff.fieldName}</span>
                       </div>
@@ -334,6 +356,11 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
                 </div>
 
                 <div className="space-y-3">
+                  {(activeIncident.affectedFeatures || []).length === 0 && (
+                    <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl p-3">
+                      No registered feature reads the changed fields. Map the features that depend on this API below so impact can be traced automatically.
+                    </p>
+                  )}
                   {(activeIncident.affectedFeatures || []).map((feat, index) => (
                     <div key={index} className="p-4 rounded-xl bg-slate-50 border border-slate-200/90 space-y-2">
                       <div className="flex items-center justify-between">
@@ -344,12 +371,12 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
                           </span>
                         </div>
                         <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
-                          {feat.impactLevel} Risk ({feat.affectedUsersPercentage} Users)
+                          {feat.impactLevel} Risk · {feat.affectedUsersPercentage}
                         </span>
                       </div>
 
                       <p className="text-xs text-slate-600 leading-relaxed">
-                        This feature expects <code className="font-mono font-bold text-blue-700 bg-blue-50 px-1 py-0.5 rounded border border-blue-200">$.{feat.expectedField}</code>. The latest response does not contain that field, so the feature may fail to display expected content.
+                        This feature expects <code className="font-mono font-bold text-blue-700 bg-blue-50 px-1 py-0.5 rounded border border-blue-200">$.{feat.expectedField}</code>. {feat.description}
                       </p>
 
                       <div className="pt-2 border-t border-slate-200/60 text-[11px] text-rose-700 font-medium flex items-center gap-1.5">
@@ -380,8 +407,18 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
 
                 {/* Add Mapping Inline Form */}
                 {showAddMapping && (
-                  <form onSubmit={handleAddNewMapping} className="p-3.5 mb-3 bg-blue-50/60 border border-blue-200 rounded-xl space-y-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <form onSubmit={(e) => void handleAddNewMapping(e)} className="p-3.5 mb-3 bg-blue-50/60 border border-blue-200 rounded-xl space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Route (optional)</label>
+                        <input
+                          type="text"
+                          value={newRoute}
+                          onChange={(e) => setNewRoute(e.target.value)}
+                          placeholder="/checkout"
+                          className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono"
+                        />
+                      </div>
                       <div>
                         <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Feature Name</label>
                         <input
@@ -415,7 +452,8 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
                       </button>
                       <button
                         type="submit"
-                        className="px-3 py-1 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700"
+                        disabled={busy}
+                        className="px-3 py-1 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700 disabled:opacity-60"
                       >
                         Save Mapping
                       </button>
@@ -425,6 +463,7 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
 
                 {/* Mappings Table */}
                 <div className="space-y-1.5">
+                  {(activeIncident.registeredMappings || []).length === 0 && <p className="text-xs text-slate-400">No mappings registered for {activeIncident.apiName}.</p>}
                   {(activeIncident.registeredMappings || []).map((m, idx) => (
                     <div key={idx} className="p-2.5 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-between text-xs">
                       <div className="flex items-center gap-2">
@@ -446,23 +485,36 @@ export const IncidentImpactPage: React.FC<IncidentImpactPageProps> = ({
               {/* Section 4: Next Steps & Direct Bridge to Recovery */}
               <div className="p-5 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div>
-                  <h4 className="text-sm font-bold">Ready to review proposed adapter fix?</h4>
+                  <h4 className="text-sm font-bold">{activeIncident.proposalId ? 'Ready to review the proposed adapter fix?' : activeIncident.issueType === 'HTTP error' || activeIncident.issueType === 'Timeout' ? 'Availability incident' : 'No proposal yet'}</h4>
                   <p className="text-xs text-blue-100 mt-0.5">
-                    API Guardian has created a safe reconciliation adapter in the Recovery workspace.
+                    {activeIncident.proposalId
+                      ? 'A declarative reconciliation adapter was drafted from the diff in the Recovery workspace.'
+                      : activeIncident.issueType === 'HTTP error' || activeIncident.issueType === 'Timeout'
+                        ? 'A response adapter cannot repair an unavailable endpoint; the incident resolves automatically once the provider answers again.'
+                        : 'Ask the engine to derive a declarative adapter from the detected changes.'}
                   </p>
                 </div>
-                <button
-                  onClick={() => {
-                    if (activeIncident.proposalId) {
-                      onSelectProposal(activeIncident.proposalId);
-                    }
-                    onNavigateSection('Recovery');
-                  }}
-                  className="px-4 py-2.5 bg-white text-blue-700 hover:bg-blue-50 rounded-xl text-xs font-bold shrink-0 flex items-center gap-2 shadow-sm transition-all active:scale-95"
-                >
-                  <span>Review in Recovery & Validation</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
+                {activeIncident.proposalId ? (
+                  <button
+                    onClick={() => {
+                      onSelectProposal(activeIncident.proposalId!);
+                      onNavigateSection('Recovery');
+                    }}
+                    className="px-4 py-2.5 bg-white text-blue-700 hover:bg-blue-50 rounded-xl text-xs font-bold shrink-0 flex items-center gap-2 shadow-sm transition-all active:scale-95"
+                  >
+                    <span>Review in Recovery & Validation</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                ) : activeIncident.issueType !== 'HTTP error' && activeIncident.issueType !== 'Timeout' ? (
+                  <button
+                    onClick={() => void onRequestProposal(activeIncident.id)}
+                    disabled={busy}
+                    className="px-4 py-2.5 bg-white text-blue-700 hover:bg-blue-50 rounded-xl text-xs font-bold shrink-0 flex items-center gap-2 shadow-sm transition-all active:scale-95 disabled:opacity-60"
+                  >
+                    <span>Draft adapter proposal</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                ) : null}
               </div>
             </>
           ) : (
