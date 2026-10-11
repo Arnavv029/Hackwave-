@@ -1,0 +1,6 @@
+{
+  "name": "SiteScope - Monitoring & Uptime Dashboard",
+  "description": "High-fidelity infrastructure monitoring dashboard featuring uptime tracking, active monitors, traffic volume analytics, response time metrics, and real-time service health.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
